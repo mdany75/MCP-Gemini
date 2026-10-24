@@ -1,5 +1,9 @@
 # Journal des versions
 
+## Non publié
+
+- Commande `/gemini` pour Claude Code (`commands/gemini.md`).
+
 ## 0.1 — 2026-10-23
 
 - Première version : serveur MCP `ask_gemini`, `gemini_status`, `reset_gemini_session`.

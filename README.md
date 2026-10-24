@@ -9,6 +9,7 @@ Pont local entre Claude et Gemini : un serveur MCP natif (Swift, sans API payant
 - Garde-fou contre les boucles : 5 échanges au plus par session et 30 appels par 10 minutes (réglables) ; au-delà, Claude doit conclure avec ce qu'il a.
 - Aucun blocage : les appels longs tournent en arrière-plan, avec signes de vie réguliers et annulation prise en charge.
 - Lecture seule : Gemini travaille dans un dossier de travail vide, en mode « plan » (il ne peut ni modifier de fichier ni lancer de commande). Il tourne avec ton compte : ce mode, pas le dossier, est la protection.
+- Commande `/gemini <question>` dans Claude Code : pose directement une question à Gemini (fichier `commands/gemini.md`, à copier dans `~/.claude/commands/`).
 - `gemini_status` : programme utilisé, version, réglages, et test de la connexion Google.
 - `reset_gemini_session` : efface la mémoire d'une session.
 - Deux programmes pris en charge : **Antigravity CLI (`agy`)**, recommandé, et gemini-cli.

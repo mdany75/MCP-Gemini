@@ -43,4 +43,5 @@ Pas de pièce jointe tant qu'il n'y a pas de `build.sh` signé et notarisé.
 - `Sources/MCPGeminiKit/` : `MCPServer` (JSON-RPC, annulation, progression), `Tools` (les trois outils), `Backend` (arguments et lecture de la sortie de `agy` / `gemini`, recherche du programme), `ProcessRunner` (lancement asynchrone, délai, annulation), `SessionStore` (mémoire et garde-fous), `Settings`, `ClaudeRegistration`.
 - `Sources/MCPGemini/main.swift` : point d'entrée et commandes.
 - `Tests/MCPGeminiKitTests/` : tests avec un faux programme.
+- `commands/` : commande `/gemini` de Claude Code (copiée dans `~/.claude/commands/`).
 - `docs/` : notes de conception.
