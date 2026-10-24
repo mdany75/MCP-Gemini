@@ -1,0 +1,54 @@
+# Standard des projets de Dany — commun à tous les projets
+
+# Fichiers produits (ils vont dans une Release GitHub, jamais dans git)
+build/
+dist/
+*.dmg
+*.pkg
+*.app/
+*.zip
+*.exe
+*.msi
+
+# Swift / SwiftPM
+.build/
+.build.nosync/
+.swiftpm/
+DerivedData/
+*.xcuserdata
+*.xcuserdatad/
+
+# Scripts et outils
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+
+# Secrets et réglages locaux
+.env
+.env.*
+*.local.json
+
+# macOS et Windows
+.DS_Store
+._*
+__MACOSX/
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+
+# Éditeurs
+.vscode/
+.idea/
+*.swp
+
+# Journaux et temporaires
+*.log
+*.tmp
+
+# Récapitulatifs du mod relais de Claude Code (peuvent contenir des infos du projet)
+.relais/
+
+# Dépôt git tenu hors de la synchronisation iCloud (ancienne astuce)
+.git.nosync/
