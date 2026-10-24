@@ -125,6 +125,40 @@ public enum Backend {
     }
 }
 
+/// Noms courts des modèles d'agy et niveaux d'effort : `flash` + `high` -> `gemini-3.8-flash-high`.
+public enum ModelCatalog {
+    public static let efforts = ["low", "medium", "high", "xhigh", "max"]
+    /// Niveaux qui se collent à un identifiant de modèle (voir `agy models`).
+    static let levels = ["low", "medium", "high"]
+
+    public static let aliases: [String: String] = [
+        "argon": "gemini-4-argon",
+        "flash": "gemini-3.8-flash",
+        "opus": "claude-opus-5-5",
+        "sonnet": "claude-sonnet-5-5",
+        "gpt": "gpt-oss-120b",
+    ]
+
+    public static func isEffort(_ text: String) -> Bool { efforts.contains(text.lowercased()) }
+
+    /// Modèle et effort à passer au programme. Un nom court (ou un identifiant sans niveau) reçoit le
+    /// niveau demandé ; un identifiant complet est gardé tel quel ; sans modèle, l'effort reste un réglage séparé.
+    public static func resolve(model: String?, effort: String?) -> (model: String?, effort: String?) {
+        let effort = effort?.lowercased().trimmingCharacters(in: .whitespaces).nilIfEmpty
+        guard let raw = model?.trimmingCharacters(in: .whitespaces).nilIfEmpty else { return (nil, effort) }
+        let base = aliases[raw.lowercased()] ?? raw
+        if levels.contains(where: { base.hasSuffix("-\($0)") }) { return (base, nil) }
+        if let effort, levels.contains(effort), aliases.values.contains(base) {
+            return (base == "gpt-oss-120b" ? "gpt-oss-120b-medium" : "\(base)-\(effort)", nil)
+        }
+        return (base, effort)
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
 /// Recherche du programme et environnement de lancement (Claude Desktop ne transmet pas le PATH du shell).
 public enum Locator {
     public static func searchDirectories(home: String) -> [String] {

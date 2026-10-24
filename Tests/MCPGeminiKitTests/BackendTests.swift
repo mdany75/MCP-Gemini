@@ -148,4 +148,15 @@ final class BackendTests: XCTestCase {
                                        fileExists: { $0 == "/Users/x/.nvm/bin/gemini" })
         XCTAssertEqual(found, "/Users/x/.nvm/bin/gemini")
     }
+
+    func testModelCatalogResolution() {
+        XCTAssertTrue(ModelCatalog.resolve(model: nil, effort: nil) == (nil, nil))
+        XCTAssertTrue(ModelCatalog.resolve(model: nil, effort: "High") == (nil, "high"))
+        XCTAssertTrue(ModelCatalog.resolve(model: "flash", effort: "high") == ("gemini-3.8-flash-high", nil))
+        XCTAssertTrue(ModelCatalog.resolve(model: "Argon", effort: "low") == ("gemini-4-argon-low", nil))
+        XCTAssertTrue(ModelCatalog.resolve(model: "gemini-4-argon-medium", effort: "high") == ("gemini-4-argon-medium", nil))
+        XCTAssertTrue(ModelCatalog.resolve(model: "gpt", effort: "high") == ("gpt-oss-120b-medium", nil))
+        XCTAssertTrue(ModelCatalog.resolve(model: "modele-inconnu", effort: "high") == ("modele-inconnu", "high"))
+        XCTAssertTrue(ModelCatalog.resolve(model: "opus", effort: nil) == ("claude-opus-5-5", nil))
+    }
 }

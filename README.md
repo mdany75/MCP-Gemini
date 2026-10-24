@@ -9,7 +9,7 @@ Pont local entre Claude et Gemini : un serveur MCP natif (Swift, sans API payant
 - Garde-fou contre les boucles : 5 échanges au plus par session et 30 appels par 10 minutes (réglables) ; au-delà, Claude doit conclure avec ce qu'il a.
 - Aucun blocage : les appels longs tournent en arrière-plan, avec signes de vie réguliers et annulation prise en charge.
 - Lecture seule : Gemini travaille dans un dossier de travail vide, en mode « plan » (il ne peut ni modifier de fichier ni lancer de commande). Il tourne avec ton compte : ce mode, pas le dossier, est la protection.
-- Commande `/gemini <question>` dans Claude Code : pose directement une question à Gemini (fichier `commands/gemini.md`, à copier dans `~/.claude/commands/`).
+- Commande `/gemini [modèle] [effort] <question>` dans Claude Code (fichier `commands/gemini.md`, à copier dans `~/.claude/commands/`) : `/gemini flash high météo demain à Québec` choisit le modèle (`argon`, `flash`, `opus`, `sonnet`, `gpt`) et l'effort (`low`, `medium`, `high`) ; `/gemini ma question` utilise les valeurs par défaut des réglages.
 - `gemini_result` : récupère la réponse d'une recherche longue. Au-delà de 40 s, `ask_gemini` rend un `job_id` au lieu d'échouer (Claude Desktop coupe les appels à 60 s) ; Gemini continue en arrière-plan.
 - `gemini_status` : programme utilisé, version, réglages, et test de la connexion Google.
 - `reset_gemini_session` : efface la mémoire d'une session.
@@ -56,7 +56,7 @@ Fichier `~/Library/Application Support/MCP Gemini/settings.json` (tous les champ
 
 ## Reconstruire
 
-Outils : Xcode (Swift 6). `swift build -c release` produit `.build/release/mcp-gemini`. `swift test` lance les 66 tests, qui utilisent un faux programme et n'appellent jamais Gemini.
+Outils : Xcode (Swift 6). `swift build -c release` produit `.build/release/mcp-gemini`. `swift test` lance les 69 tests, qui utilisent un faux programme et n'appellent jamais Gemini.
 
 ## Organisation
 

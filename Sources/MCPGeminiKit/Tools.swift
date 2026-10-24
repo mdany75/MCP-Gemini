@@ -56,7 +56,8 @@ public final class ToolHandler: Sendable {
                     "properties": [
                         "prompt": ["type": "string", "description": "La demande, complète et autonome."],
                         "session_id": ["type": "string", "description": "Identifiant renvoyé par un appel précédent, pour poursuivre la même conversation. Omettre pour en ouvrir une nouvelle."],
-                        "model": ["type": "string", "description": "Modèle à utiliser (facultatif ; par défaut celui des réglages)."],
+                        "model": ["type": "string", "description": "Modèle (facultatif ; par défaut celui des réglages) : nom court argon, flash, opus, sonnet, gpt, ou identifiant complet de `agy models`."],
+                        "effort": ["type": "string", "description": "Effort de réflexion (facultatif ; par défaut celui des réglages) : low, medium ou high. Avec un nom court de modèle, choisit la variante (flash + high = gemini-3.8-flash-high)."],
                     ],
                     "required": ["prompt"],
                 ],
@@ -149,7 +150,14 @@ public final class ToolHandler: Sendable {
         guard let executable = Locator.executable(for: kind, override: settings.executable, home: home) else {
             return .fail(Self.missingMessage(kind, override: settings.executable))
         }
-        let model = arguments["model"]?.string.flatMap { $0.isEmpty ? nil : $0 } ?? settings.model
+        let requestedEffort = arguments["effort"]?.string.flatMap { $0.isEmpty ? nil : $0 }
+        if let requestedEffort, !ModelCatalog.isEffort(requestedEffort) {
+            return .fail("Effort « \(requestedEffort) » inconnu : \(ModelCatalog.efforts.joined(separator: ", ")).")
+        }
+        let askedModel = arguments["model"]?.string.flatMap { $0.isEmpty ? nil : $0 }
+        let (model, effort) = ModelCatalog.resolve(
+            model: askedModel ?? settings.model,
+            effort: requestedEffort ?? settings.effort)
 
         let session: SessionSnapshot
         do {
@@ -161,7 +169,7 @@ public final class ToolHandler: Sendable {
         let fullPrompt = composePrompt(prompt, session: session)
         let reply: BridgeReply
         do {
-            reply = try await execute(kind: kind, executable: executable, prompt: fullPrompt, model: model,
+            reply = try await execute(kind: kind, executable: executable, prompt: fullPrompt, model: model, effort: effort,
                                       conversationId: session.conversationId)
         } catch is CancellationError {
             await store.abort(id: session.id)
@@ -222,10 +230,10 @@ public final class ToolHandler: Sendable {
     }
 
     private func execute(kind: BackendKind, executable: String, prompt: String, model: String?,
-                         conversationId: String?) async throws -> BridgeReply {
+                         effort: String?, conversationId: String?) async throws -> BridgeReply {
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         let timeout = settings.effectiveTimeout
-        let arguments = Backend.arguments(kind: kind, prompt: prompt, model: model, mode: settings.mode, effort: settings.effort,
+        let arguments = Backend.arguments(kind: kind, prompt: prompt, model: model, mode: settings.mode, effort: effort,
                                           conversationId: conversationId, timeoutSeconds: timeout)
         let result = try await ProcessRunner.run(
             executable: executable, arguments: arguments, environment: environment, workingDirectory: workspace,
@@ -264,7 +272,7 @@ public final class ToolHandler: Sendable {
         do {
             try await store.noteCall()
             let reply = try await execute(kind: settings.backend, executable: executable,
-                                          prompt: "Réponds uniquement par le mot : ok", model: settings.model, conversationId: nil)
+                                          prompt: "Réponds uniquement par le mot : ok", model: settings.model, effort: settings.effort, conversationId: nil)
             if let error = reply.error {
                 lines.append("Test : échec — \(error)")
                 return .fail(lines.joined(separator: "\n"))

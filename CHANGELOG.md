@@ -1,5 +1,9 @@
 # Journal des versions
 
+## 0.3 — 2026-10-23
+
+- `/gemini [modèle] [effort] question` : choix du modèle (`argon`, `flash`, `opus`, `sonnet`, `gpt` ou identifiant complet) et de l'effort (`low`, `medium`, `high`) ; sans eux, les valeurs par défaut des réglages. `ask_gemini` accepte les paramètres `model` et `effort`.
+
 ## 0.2 — 2026-10-23
 
 - Corrige « Request timed out » dans Claude Desktop : une demande qui dépasse 40 s (réglage `waitSeconds`) rend un `job_id` au lieu d'échouer ; Gemini continue en arrière-plan et la réponse se récupère avec le nouvel outil `gemini_result`.

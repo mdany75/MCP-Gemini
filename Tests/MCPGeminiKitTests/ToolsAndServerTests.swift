@@ -172,6 +172,26 @@ final class ToolHandlerTests: XCTestCase {
         ProcessRegistry.terminateAll(grace: 3)
     }
 
+    func testModelAndEffortArgumentsReachTheProgram() async throws {
+        let agent = try FakeAgent(body: FakeAgent.okJSON)
+        let handler = agent.handler(settings: agent.settings { $0.effort = "low" })
+        _ = await handler.call(name: "ask_gemini", arguments: ["prompt": "q", "model": "flash", "effort": "high"])
+        _ = await handler.call(name: "ask_gemini", arguments: ["prompt": "q"])
+        let withModel = agent.calls[0]
+        XCTAssertEqual(withModel[withModel.firstIndex(of: "--model")! + 1], "gemini-3.8-flash-high")
+        XCTAssertFalse(withModel.contains("--effort"))
+        let byDefault = agent.calls[1]
+        XCTAssertFalse(byDefault.contains("--model"))
+        XCTAssertEqual(byDefault[byDefault.firstIndex(of: "--effort")! + 1], "low")
+    }
+
+    func testInvalidEffortIsRefused() async throws {
+        let agent = try FakeAgent(body: FakeAgent.okJSON)
+        let r = await agent.handler().call(name: "ask_gemini", arguments: ["prompt": "q", "effort": "turbo"])
+        XCTAssertTrue(r.isError)
+        XCTAssertTrue(agent.calls.isEmpty)
+    }
+
     func testResultWithoutAnyJob() async throws {
         let handler = try FakeAgent(body: "true").handler()
         let r = await handler.call(name: "gemini_result", arguments: [:])
