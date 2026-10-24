@@ -10,7 +10,8 @@ public enum BackendKind: String, Codable, CaseIterable, Sendable {
     public var binaryName: String { rawValue }
 }
 
-/// Réglages de l'utilisateur ; un champ invalide reprend sa valeur par défaut sans faire perdre les autres,, dans `~/Library/Application Support/MCP Gemini/settings.json`.
+/// Réglages de l'utilisateur, dans `~/Library/Application Support/MCP Gemini/settings.json`. Un champ invalide
+/// reprend sa valeur par défaut sans faire perdre les autres.
 public struct Settings: Codable, Equatable, Sendable {
     public var backend: BackendKind = .agy
     /// Chemin complet du programme ; `nil` = recherche automatique.
@@ -19,12 +20,12 @@ public struct Settings: Codable, Equatable, Sendable {
     public var ytDlp: String?
     /// Modèle imposé (voir `agy models`) ; `nil` = celui du programme.
     public var model: String?
-    /// Mode d'exécution d'agy : `plan` (lecture seule), `accept-edits` ou `auto`.
+    /// Ancien réglage du mode d'agy : le pont impose toujours `plan` (lecture seule) ; une autre valeur est ignorée.
     public var mode: String? = "plan"
-    /// Effort de réflexion d'agy : `low`, `medium`, `high`… ; `nil` = celui du programme.
-    /// Plus bas = plus rapide (Claude Desktop coupe les appels qui dépassent environ 60 s).
+    /// Effort de réflexion d'agy : `low`, `medium`, `high`… ; `nil` = celui du programme. Plus bas = plus rapide.
     public var effort: String?
     /// Attente maximale par appel d'outil avant de rendre un `job_id`, en secondes (sous les 60 s de Claude Desktop).
+    /// Claude Code, qui n'a pas cette coupure, attend la réponse jusqu'au bout.
     public var waitSeconds: Int = 40
     /// Durée maximale d'un appel, en secondes.
     public var timeoutSeconds: Int = 240
@@ -53,6 +54,7 @@ public struct Settings: Codable, Equatable, Sendable {
         model = (try? c.decodeIfPresent(String.self, forKey: .model)) ?? nil
         mode = (try? c.decodeIfPresent(String.self, forKey: .mode)) ?? d.mode
         effort = (try? c.decodeIfPresent(String.self, forKey: .effort)) ?? nil
+        waitSeconds = (try? c.decodeIfPresent(Int.self, forKey: .waitSeconds)) ?? d.waitSeconds
         timeoutSeconds = (try? c.decodeIfPresent(Int.self, forKey: .timeoutSeconds)) ?? d.timeoutSeconds
         maxTurnsPerSession = (try? c.decodeIfPresent(Int.self, forKey: .maxTurnsPerSession)) ?? d.maxTurnsPerSession
         maxCallsPer10Minutes = (try? c.decodeIfPresent(Int.self, forKey: .maxCallsPer10Minutes)) ?? d.maxCallsPer10Minutes
@@ -65,12 +67,44 @@ public struct Settings: Codable, Equatable, Sendable {
     public var effectiveMaxTurns: Int { min(max(maxTurnsPerSession, 1), 20) }
     public var effectiveMaxCalls: Int { min(max(maxCallsPer10Minutes, 1), 200) }
 
+    /// Modèle des réglages, normalisé ; `nil` s'il est absent ou mal formé (voir `warnings`).
+    public var effectiveModel: String? { model.flatMap(ModelCatalog.normalize) }
+    /// Effort des réglages, normalisé ; `nil` s'il est absent ou inconnu (voir `warnings`).
+    public var effectiveEffort: String? {
+        effort.flatMap(ModelCatalog.normalize).flatMap { ModelCatalog.isEffort($0) ? $0 : nil }
+    }
+
+    /// Réglages ignorés, à signaler (journal au démarrage, `gemini_status`).
+    public var warnings: [String] {
+        var list: [String] = []
+        if let mode, mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "plan" {
+            list.append("réglage « mode » = « \(mode) » ignoré : le pont impose toujours plan (lecture seule)")
+        }
+        if let model, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, effectiveModel == nil {
+            list.append("réglage « model » = « \(model) » ignoré : nom de modèle mal formé")
+        }
+        if let effort, !effort.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, effectiveEffort == nil {
+            list.append("réglage « effort » = « \(effort) » ignoré : \(ModelCatalog.efforts.joined(separator: ", ")) seulement")
+        }
+        return list
+    }
+
     public static func supportDirectory(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
         home.appendingPathComponent("Library/Application Support/MCP Gemini", isDirectory: true)
     }
 
     public static func defaultURL() -> URL {
         supportDirectory().appendingPathComponent("settings.json")
+    }
+
+    /// Sessions gardées sur disque (un fichier par session).
+    public static func sessionsURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        supportDirectory(home: home).appendingPathComponent("sessions", isDirectory: true)
+    }
+
+    /// Dossier temporaire privé donné à agy (TMPDIR) : il ne lit ni n'écrit dans celui, partagé, des autres applications.
+    public static func temporaryURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        supportDirectory(home: home).appendingPathComponent("tmp", isDirectory: true)
     }
 
     /// Dossier de travail du programme : vide, pour qu'il ne voie aucun projet de l'utilisateur.
@@ -88,6 +122,24 @@ public struct Settings: Codable, Equatable, Sendable {
         } catch {
             throw BridgeError.invalid("Le fichier \(url.path) est illisible : \(error.localizedDescription)")
         }
+    }
+
+    /// Change une seule clé du fichier, sans réécrire les autres : les valeurs par défaut (dont la consigne)
+    /// ne sont pas figées et suivent les versions suivantes. Un fichier illisible n'est pas touché.
+    public static func update(_ key: String, to value: JSONValue, at url: URL) throws {
+        var object: [String: JSONValue] = [:]
+        if FileManager.default.fileExists(atPath: url.path) {
+            let data = try Data(contentsOf: url)
+            if !data.isEmpty {
+                guard let existing = (try? JSONCoding.parse(data))?.object else {
+                    throw BridgeError.invalid("Le fichier \(url.path) n'est pas un objet JSON ; il n'a pas été modifié.")
+                }
+                object = existing
+            }
+        }
+        object[key] = value
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data((JSONCoding.pretty(.object(object)) + "\n").utf8).write(to: url, options: .atomic)
     }
 
     public func save(to url: URL) throws {

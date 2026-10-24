@@ -19,19 +19,24 @@ public struct JSONRPCError: Error, Equatable {
 
 /// Serveur MCP minimal (`initialize`, `ping`, `tools/list`, `tools/call`) sur des messages JSON-RPC
 /// d'une ligne. Les appels d'outils tournent en parallèle : un appel à Gemini de plusieurs dizaines de
-/// secondes ne bloque ni `ping` ni les autres requêtes. Prend en charge `notifications/cancelled`
-/// et envoie des `notifications/progress` pendant les appels longs quand le client en demande.
+/// secondes ne bloque ni `ping` ni les autres requêtes. Prend en charge `notifications/cancelled` (la
+/// requête annulée ne reçoit plus de réponse) et envoie des `notifications/progress` pendant les appels
+/// longs quand le client en demande : ce que fait Gemini dès que ça change, et un signe de vie régulier.
 public final class MCPServer: @unchecked Sendable {
     public static let supportedProtocolVersions = ["2025-06-18", "2025-03-26", "2024-11-05"]
     public let name: String
     public let version: String
     public let instructions: String
     private let tools: ToolHandler
-    /// Intervalle entre deux notifications de progression.
+    /// Intervalle entre deux signes de vie quand rien ne change.
     private let progressInterval: TimeInterval
 
     private let lock = NSLock()
     private var inFlight: [String: Task<Void, Never>] = [:]
+    /// Requêtes annulées par le client : leur réponse n'est pas envoyée.
+    private var cancelled = Set<String>()
+    /// Plus aucun envoi (fin de l'entrée : le client est parti).
+    private var closed = false
 
     public init(name: String, version: String, instructions: String, tools: ToolHandler,
                 progressInterval: TimeInterval = 10) {
@@ -63,33 +68,57 @@ public final class MCPServer: @unchecked Sendable {
         }
 
         let key = message["id"].flatMap { $0.isNull ? nil : JSONCoding.line($0) }
+        let gated: @Sendable (JSONValue) -> Void = { [weak self] value in
+            guard let self, self.isOpen else { return }
+            send(value)
+        }
         // Le verrou est tenu pendant l'inscription : la tâche ne peut pas se « désinscrire » avant.
         lock.lock()
         let task = Task { [self] in
-            if let response = await handle(message: message, send: send) { send(response) }
+            let response = await handle(message: message, send: gated)
+            // Une requête annulée par le client ne reçoit pas de réponse (spécification MCP).
+            if let response, !(key.map(wasCancelled) ?? false) { gated(response) }
             if let key { forget(key) }
         }
         if let key { inFlight[key] = task }
         lock.unlock()
     }
 
-    /// Annule tout (fin de l'entrée) : les programmes lancés sont arrêtés.
+    /// Fin de l'entrée : les attentes en cours s'arrêtent et plus rien n'est envoyé (le client est parti).
+    /// Les demandes à Gemini, détachées, sont arrêtées par l'arrêt du serveur.
     public func cancelAll() {
         lock.lock()
+        closed = true
         let tasks = Array(inFlight.values)
         lock.unlock()
         tasks.forEach { $0.cancel() }
     }
 
+    private var isOpen: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !closed
+    }
+
+    private func wasCancelled(_ key: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled.contains(key)
+    }
+
     private func forget(_ key: String) {
         lock.lock()
         inFlight.removeValue(forKey: key)
+        cancelled.remove(key)
         lock.unlock()
     }
 
     private func cancel(requestID: JSONValue) {
+        let key = JSONCoding.line(requestID)
         lock.lock()
-        let task = inFlight[JSONCoding.line(requestID)]
+        let task = inFlight[key]
+        // Seulement une requête en cours : un identifiant réutilisé plus tard ne doit pas être réduit au silence.
+        if task != nil { cancelled.insert(key) }
         lock.unlock()
         task?.cancel()
     }
@@ -131,6 +160,8 @@ public final class MCPServer: @unchecked Sendable {
     private func dispatch(method: String, params: JSONValue, send: @escaping @Sendable (JSONValue) -> Void) async throws -> JSONValue {
         switch method {
         case "initialize":
+            // Claude Code (« claude-code ») n'a pas la coupure de 60 s de Claude Desktop : ask_gemini l'attend jusqu'au bout.
+            tools.setClient(name: params["clientInfo"]?["name"]?.string)
             let requested = params["protocolVersion"]?.string ?? ""
             let negotiated = Self.supportedProtocolVersions.contains(requested)
                 ? requested : Self.supportedProtocolVersions[0]
@@ -149,38 +180,52 @@ public final class MCPServer: @unchecked Sendable {
                 throw JSONRPCError(code: JSONRPCError.invalidParams, message: "Paramètre « name » manquant")
             }
             let arguments = params["arguments"]?.object ?? [:]
-            let ticker = progressTicker(token: params["_meta"]?["progressToken"], toolName: toolName, send: send)
-            defer { ticker?.cancel() }
-            let result = await tools.call(name: toolName, arguments: arguments)
-            return [
-                "content": [["type": "text", "text": .string(result.text)]],
-                "isError": .bool(result.isError),
-            ]
+            let token = params["_meta"]?["progressToken"]
+            let progress = token.flatMap { $0.isNull ? nil : CallProgress() }
+            let ticker = progressTicker(token: token, toolName: toolName, progress: progress, send: send)
+            let result = await tools.call(name: toolName, arguments: arguments, progress: progress)
+            // Le signe de vie est arrêté (et attendu) avant la réponse : aucune progression ne la suit.
+            ticker?.cancel()
+            await ticker?.value
+            var content: [JSONValue] = [["type": "text", "text": .string(result.text)]]
+            content += result.images.map { ["type": "image", "data": .string($0.data), "mimeType": .string($0.mimeType)] }
+            return ["content": .array(content), "isError": .bool(result.isError)]
         default:
             throw JSONRPCError(code: JSONRPCError.methodNotFound, message: "Méthode inconnue : \(method)")
         }
     }
 
-    /// Un signe de vie régulier pendant un appel long, seulement si le client a donné un `progressToken`.
-    private func progressTicker(token: JSONValue?, toolName: String,
+    /// Progression pendant un appel long, seulement si le client a donné un `progressToken` : ce que fait
+    /// l'outil dès que ça change (au plus une fois par seconde), sinon un signe de vie tous les `progressInterval`.
+    /// `progress` est un compteur strictement croissant, sans total (durée inconnue).
+    private func progressTicker(token: JSONValue?, toolName: String, progress: CallProgress?,
                                 send: @escaping @Sendable (JSONValue) -> Void) -> Task<Void, Never>? {
         guard let token, !token.isNull else { return nil }
         let interval = progressInterval
+        let tick = min(1.0, interval)
         return Task {
-            var elapsed = 0.0
+            let start = Date()
+            var lastSent = Date()
+            var lastText: String?
             var step = 0.0
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                try? await Task.sleep(nanoseconds: UInt64(tick * 1_000_000_000))
                 if Task.isCancelled { break }
-                elapsed += interval
+                let note = progress?.note
+                let changed = note != nil && note?.text != lastText
+                guard changed || Date().timeIntervalSince(lastSent) >= interval else { continue }
                 step += 1
+                lastSent = Date()
+                lastText = note?.text
+                let seconds = note?.elapsed ?? Int(Date().timeIntervalSince(start))
+                let message = "\(note?.text ?? "\(toolName) : en cours") — \(seconds) s"
                 send([
                     "jsonrpc": "2.0",
                     "method": "notifications/progress",
                     "params": [
                         "progressToken": token,
                         "progress": .number(step),
-                        "message": .string("\(toolName) : en attente de Gemini (\(Int(elapsed)) s)"),
+                        "message": .string(message),
                     ],
                 ])
             }

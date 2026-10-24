@@ -5,16 +5,21 @@ import MCPGeminiKit
 // Les journaux vont sur stderr, jamais sur stdout (réservé au protocole).
 
 func log(_ message: String) {
-    FileHandle.standardError.write(Data("[mcp-gemini] \(message)\n".utf8))
+    StdioWriter.writeAll(fd: STDERR_FILENO, data: Data("[mcp-gemini] \(message)\n".utf8))
 }
 
 /// Écritures sur stdout sérialisées : plusieurs appels d'outils répondent en parallèle.
 let outputLock = NSLock()
+/// stdout fermé (le client est parti) : plus aucune écriture, et arrêt propre.
+nonisolated(unsafe) var outputClosed = false
 
 func print(line: String) {
     outputLock.lock()
-    FileHandle.standardOutput.write(Data((line + "\n").utf8))
+    let wasOpen = !outputClosed
+    if wasOpen, !StdioWriter.writeAll(fd: STDOUT_FILENO, data: Data((line + "\n").utf8)) { outputClosed = true }
+    let justClosed = wasOpen && outputClosed
     outputLock.unlock()
+    if justClosed { DispatchQueue.global().async { shutdown("sortie fermée") } }
 }
 
 func executablePath() -> String {
@@ -27,7 +32,8 @@ func usage() {
     mcp-gemini \(ServerInfo.version) — pont MCP entre Claude et Gemini (par la ligne de commande locale)
 
     Usage : mcp-gemini                       lance le serveur (stdio, pour Claude)
-            mcp-gemini --install             inscrit cet exécutable dans Claude Desktop et Claude Code
+            mcp-gemini --install             installe cet exécutable (emplacement stable), l'inscrit dans Claude Desktop
+                                             et Claude Code, et installe la commande /gemini de Claude Code
             mcp-gemini --uninstall           retire l'inscription
             mcp-gemini --status              programmes trouvés, versions, réglages, inscriptions
             mcp-gemini --test                envoie une petite demande à Gemini (vérifie la connexion)
@@ -48,34 +54,59 @@ func loadSettings() -> Settings {
 }
 
 func makeHandler(_ settings: Settings) -> ToolHandler {
-    ToolHandler(settings: settings,
-                store: SessionStore(maxTurns: settings.effectiveMaxTurns, maxCalls: settings.effectiveMaxCalls))
+    // Dossier temporaire privé pour agy (créé 0700) : il ne voit pas celui, partagé, des autres applications.
+    let temporary = Settings.temporaryURL()
+    try? FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    return ToolHandler(settings: settings,
+                       store: SessionStore(maxTurns: settings.effectiveMaxTurns, maxCalls: settings.effectiveMaxCalls,
+                                           directory: Settings.sessionsURL()),
+                       environment: Locator.environment(temporaryDirectory: temporary.path))
 }
 
-/// Arrêt propre : les programmes lancés sont arrêtés (puis tués s'ils résistent) avant de quitter,
-/// pour ne laisser aucun `agy` orphelin qui continuerait à consommer le quota.
+let shutdownOnce = OnceFlag()
+
+/// Arrêt propre, une seule fois (fin de l'entrée et signal peuvent arriver ensemble) : les programmes lancés
+/// sont arrêtés (puis tués s'ils résistent) avant toute écriture, pour ne laisser aucun `agy` orphelin qui
+/// continuerait à consommer le quota même si stderr est déjà fermé.
 func shutdown(_ reason: String) -> Never {
-    log("\(reason) : arrêt")
+    guard shutdownOnce.fire() else {
+        // Un second appelant attend que le premier quitte.
+        while true { pause() }
+    }
     ProcessRegistry.terminateAll(grace: 3)
+    Attachments.removeAllPrepared()
+    log("\(reason) : arrêt")
     exit(0)
 }
 
-func serve() {
-    let settings = loadSettings()
-    let server = MCPServer(name: ServerInfo.name, version: ServerInfo.version,
-                           instructions: ServerInfo.instructions(settings: settings), tools: makeHandler(settings))
-    log("démarré (version \(ServerInfo.version), programme : \(settings.backend.rawValue))")
-
-    // Écrire sur un tube fermé ne doit pas tuer le serveur sans nettoyage ; les signaux d'arrêt passent par shutdown.
+/// SIGTERM, SIGINT et SIGHUP passent par `shutdown` (aussi pour `--test` : Ctrl-C n'atteint pas agy, qui a son
+/// propre groupe de processus). Les sources doivent rester en vie.
+func installSignalHandlers() -> [DispatchSourceSignal] {
+    // Écrire sur un tube fermé ne doit pas tuer le serveur sans nettoyage.
     signal(SIGPIPE, SIG_IGN)
-    var signalSources: [DispatchSourceSignal] = []
-    for sig in [SIGTERM, SIGINT, SIGHUP] {
+    return [SIGTERM, SIGINT, SIGHUP].map { sig in
         signal(sig, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: sig, queue: .global())
         source.setEventHandler { shutdown("signal \(sig)") }
         source.resume()
-        signalSources.append(source)
+        return source
     }
+}
+
+func serve() {
+    let settings = loadSettings()
+    let handler = makeHandler(settings)
+    let server = MCPServer(name: ServerInfo.name, version: ServerInfo.version,
+                           instructions: ServerInfo.instructions(settings: settings), tools: handler)
+    log("démarré (version \(ServerInfo.version), programme : \(settings.backend.rawValue))")
+    settings.warnings.forEach { log($0) }
+    // Pièces jointes oubliées par un arrêt brutal (les instances partagent le dossier : seulement les vieilles).
+    Attachments.purgeStale(workspace: Settings.workspaceURL(), olderThan: TimeInterval(settings.effectiveTimeout + 120))
+    Task.detached {
+        await SessionStore(maxTurns: 1, maxCalls: 1, directory: Settings.sessionsURL()).purgeDisk()
+    }
+
+    let signalSources = installSignalHandlers()
 
     let send: @Sendable (JSONValue) -> Void = { print(line: JSONCoding.line($0)) }
     let reader = Thread {
@@ -93,20 +124,31 @@ func serve() {
 
 /// Exécute une commande asynchrone depuis le code synchrone du point d'entrée.
 func runBlocking(_ work: @escaping @Sendable () async -> Int32) -> Never {
+    let signalSources = installSignalHandlers()
     Task {
         let code = await work()
+        // Après la commande, plus de signal à traiter : quitter directement.
+        _ = shutdownOnce.fire()
         exit(code)
     }
-    dispatchMain()
+    withExtendedLifetime(signalSources) { dispatchMain() }
 }
 
 func status() -> Never {
     let settings = loadSettings()
     print(line: "Version : \(ServerInfo.version)")
     print(line: "Exécutable : \(executablePath())")
+    var commands = Set<String>()
     for target in ClaudeRegistration.defaultTargets() {
         let command = ClaudeRegistration.registeredCommand(in: target)
+        if let command { commands.insert(command) }
         print(line: "\(target.label) : \(command.map { "inscrit (\($0))" } ?? "non inscrit")")
+    }
+    if commands.count > 1 {
+        print(line: "⚠️ Claude Desktop et Claude Code ne lancent pas le même exécutable : relancer `mcp-gemini --install`.")
+    }
+    if commands.contains(where: { $0.contains("/.build/") }) {
+        print(line: "⚠️ Un exécutable inscrit est dans le dossier de compilation (il change à chaque compilation) : relancer `mcp-gemini --install`.")
     }
     runBlocking {
         let result = await makeHandler(settings).call(name: "gemini_status", arguments: [:])
@@ -135,12 +177,20 @@ case "--help", "-h":
     usage()
 case "--install":
     do {
-        for line in try ClaudeRegistration.register(executable: executablePath(), targets: ClaudeRegistration.defaultTargets()) {
+        // Copie à un emplacement stable (indépendant du dossier de compilation), signée : c'est ce chemin
+        // qui est inscrit dans Claude Desktop et Claude Code, qui lancent donc la même version.
+        let stable = ClaudeRegistration.stableExecutableURL()
+        try ClaudeRegistration.installExecutable(from: executablePath(), to: stable)
+        print(line: "Exécutable installé : \(stable.path)")
+        for line in try ClaudeRegistration.register(executable: stable.path, targets: ClaudeRegistration.defaultTargets()) {
             print(line: line)
         }
+        let command = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/commands/gemini.md")
+        print(line: try ClaudeRegistration.installCommand(text: GeminiCommand.text, to: command,
+                                                          knownPreviousHashes: GeminiCommand.previousHashes))
         print(line: "Redémarrer Claude Desktop pour que le connecteur apparaisse ; Claude Code le voit à sa prochaine session.")
     } catch {
-        log("échec de l'inscription : \(error.localizedDescription)")
+        log("échec de l'installation : \(error.localizedDescription)")
         exit(1)
     }
 case "--uninstall":
@@ -162,9 +212,8 @@ case "--backend":
         exit(2)
     }
     do {
-        var settings = try Settings.load(from: Settings.defaultURL())
-        settings.backend = kind
-        try settings.save(to: Settings.defaultURL())
+        // Seule la clé « backend » change : les autres réglages et les valeurs par défaut restent tels quels.
+        try Settings.update("backend", to: .string(kind.rawValue), at: Settings.defaultURL())
         print(line: "Programme choisi : \(kind.rawValue). Relancer Claude Desktop (ou une nouvelle session Claude Code) pour appliquer.")
     } catch {
         log(error.localizedDescription)

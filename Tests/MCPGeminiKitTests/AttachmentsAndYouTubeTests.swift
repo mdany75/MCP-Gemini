@@ -88,8 +88,168 @@ final class AttachmentsTests: XCTestCase {
         XCTAssertTrue(long.hasSuffix(".pdf"), "l'extension survit à la troncature")
         XCTAssertLessThanOrEqual(long.count, 84)
         XCTAssertEqual(Attachments.sanitize("   "), "fichier")
-        XCTAssertTrue(Attachments.promptNote(["attachments/x/1-a.pdf"]).contains("attachments/x/1-a.pdf"))
-        XCTAssertEqual(Attachments.promptNote([]), "")
+        let agy = Attachments.promptNote(["attachments/x/1-a.pdf"], backend: .agy)
+        XCTAssertTrue(agy.contains("attachments/x/1-a.pdf"))
+        XCTAssertTrue(agy.contains("`view_file`") && !agy.contains("read_file"), agy)
+        XCTAssertTrue(Attachments.promptNote(["attachments/x/1-a.pdf"], backend: .gemini).contains("`read_file`"))
+        XCTAssertEqual(Attachments.promptNote([], backend: .agy), "")
+    }
+
+    // MARK: - Dossiers temporaires
+
+    /// Crée un vrai fichier (sur macOS, /tmp est un lien vers /private/tmp) et le note pour l'effacer à la fin.
+    private func makeAbsolute(_ path: String, _ content: String = "x") throws -> String {
+        let url = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try content.write(to: url, atomically: true, encoding: .utf8)
+        return path
+    }
+
+    func testOutsideHomeOnlyTmpTopLevelAndClaudeScratchpadsAreAccepted() throws {
+        let tag = UUID().uuidString
+        let claudeRoot = "/tmp/claude-mcpgemini-test-\(tag)"
+        let otherRoot = "/tmp/mcp-gemini-test-\(tag)"
+        let topLevel = "/tmp/mcp-gemini-test-\(tag).txt"
+        defer {
+            for path in [claudeRoot, otherRoot, topLevel] { try? FileManager.default.removeItem(atPath: path) }
+        }
+        let systemTemp = try makeAbsolute(NSTemporaryDirectory() + "mcp-gemini-test-\(tag).txt")
+        defer { try? FileManager.default.removeItem(atPath: systemTemp) }
+        let refused = [
+            systemTemp,
+            try makeAbsolute("\(claudeRoot)/x/tasks/a.txt"),
+            try makeAbsolute("\(otherRoot)/a.txt"),
+            try makeAbsolute("\(otherRoot)/scratchpad/a.txt"),
+        ]
+        for path in refused {
+            XCTAssertThrowsError(try Attachments.validate(path, home: home.path), path) { error in
+                XCTAssertTrue(error.localizedDescription.contains("Bureau, Documents"), error.localizedDescription)
+            }
+        }
+        let accepted = [
+            try makeAbsolute(topLevel),
+            "/private" + topLevel,
+            try makeAbsolute("\(claudeRoot)/x/scratchpad/a.txt"),
+            try makeAbsolute("\(claudeRoot)/-Users-x-Projet/0f3c/scratchpad/sous/b.md"),
+        ]
+        for path in accepted {
+            XCTAssertNoThrow(try Attachments.validate(path, home: home.path), path)
+        }
+    }
+
+    func testOutsideHomeRule() {
+        func allowed(_ path: String) -> Bool { Attachments.isAllowedOutsideHome(path.split(separator: "/").map(String.init)) }
+        XCTAssertTrue(allowed("/tmp/a.txt"))
+        XCTAssertTrue(allowed("/private/tmp/a.txt"))
+        XCTAssertTrue(allowed("/tmp/claude-501/x/scratchpad/a.txt"))
+        XCTAssertFalse(allowed("/tmp/claude-501/x/tasks/a.txt"))
+        XCTAssertFalse(allowed("/tmp/claude-501/x/scratchpad"), "le dossier lui-même n'est pas un fichier joint")
+        XCTAssertFalse(allowed("/tmp/autre/scratchpad/a.txt"))
+        XCTAssertFalse(allowed("/var/folders/ab/xyz/T/a.txt"))
+        XCTAssertFalse(allowed("/private/var/folders/ab/xyz/T/a.txt"))
+        XCTAssertFalse(allowed("/etc/hosts"))
+    }
+
+    // MARK: - Noms et contenus sensibles
+
+    func testSensitivePathsAreRefused() throws {
+        let paths = [
+            try make("Documents/Mots de passe.txt"),
+            try make("Documents/clés API.txt"),
+            try make("Documents/Passwords/list.txt"),
+            try make("Downloads/github-recovery-codes.txt"),
+            try make("Downloads/bitwarden_export_2026.json"),
+            try make("Documents/MDP banque.csv"),
+            try make("Desktop/Trousseau/notes.md"),
+            try make("Documents/Codes de secours.pdf"),
+            try make("Downloads/projet-firebase-adminsdk-x1.json"),
+            try make("Pictures/seed.png"),
+        ]
+        for path in paths {
+            XCTAssertThrowsError(try Attachments.validate(path, home: home.path), path) { error in
+                XCTAssertTrue(error.localizedDescription.contains("évoque un secret"), error.localizedDescription)
+            }
+        }
+        for ok in ["Documents/rapport final.pdf", "Documents/Clément.txt", "Pictures/seedling.png", "Documents/Clef du succès.md"] {
+            XCTAssertNoThrow(try Attachments.validate(try make(ok), home: home.path), ok)
+        }
+    }
+
+    func testFilesContainingKeysAreRefused() throws {
+        let awsKey = "AKIA" + "ABCDEFGHIJKLMNOP"
+        let secrets = [
+            "compte.json": #"{"type": "service_account", "project_id": "p"}"#,
+            "prive.json": #"{"private_key": "abc"}"#,
+            "serveur.txt": "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n",
+            "aws.csv": "id,clé\n1,\(awsKey)\n",
+            "github.md": "jeton : ghp_" + String(repeating: "a1B2", count: 9),
+            "slack.txt": "xoxb-" + "123456789012-abcdef",
+            "anthropic.txt": "ANTHROPIC=sk-ant-" + "api03-" + String(repeating: "Zz9", count: 10),
+            "google.txt": "cle=AIza" + String(repeating: "x", count: 35),
+        ]
+        for (name, content) in secrets {
+            let path = try make("Documents/\(name)", content)
+            XCTAssertThrowsError(try Attachments.validate(path, home: home.path), name) { error in
+                XCTAssertFalse(error.localizedDescription.contains(awsKey), "le secret n'est jamais recopié")
+            }
+        }
+        let innocent = [
+            "notes.txt": "Le préfixe ghp_ désigne un jeton GitHub ; une clé privée se range dans un coffre.",
+            "donnees.json": #"{"type": "user", "private": true}"#,
+            "scan.pdf": "%PDF -----BEGIN PRIVATE KEY-----",  // seuls les fichiers texte sont lus
+        ]
+        for (name, content) in innocent {
+            XCTAssertNoThrow(try Attachments.validate(try make("Documents/\(name)", content), home: home.path), name)
+        }
+        // Une clé au-delà des 256 premiers Ko n'est pas cherchée (limite de lecture).
+        let far = String(repeating: "a", count: Attachments.scannedBytes) + "-----BEGIN PRIVATE KEY-----"
+        XCTAssertNoThrow(try Attachments.validate(try make("Documents/long.txt", far), home: home.path))
+    }
+
+    func testSensitiveWordRules() {
+        for name in ["clés API.txt", "Mot-de-passe.md", "mes_tokens.txt", "Wallet.json", "id_ed25519.txt", "1Password Export.csv",
+                     "KeePass.csv", "Backup codes.txt", "Recovery-Codes.txt", "service-account.json", "Mnemonic phrase.txt"] {
+            XCTAssertTrue(Attachments.looksSensitive(name), name)
+        }
+        for name in ["Clément.txt", "seedling.png", "Rapport annuel.pdf", "Documents", "Downloads", "Passeport photo.png", "tokenisation.md"] {
+            XCTAssertFalse(Attachments.looksSensitive(name), name)
+        }
+    }
+
+    // MARK: - Fichiers produits et nettoyage
+
+    func testGeneratedFilesAreJoined() throws {
+        let file = Attachments.GeneratedFile(name: "transcription YouTube.txt", data: Data("Bonjour".utf8))
+        let prepared = try Attachments.prepare(paths: [try make("Documents/a.txt")], generated: [file],
+                                               workspace: workspace, home: home.path, id: "gen")
+        XCTAssertEqual(prepared.relativePaths, ["attachments/gen/1-a.txt", "attachments/gen/2-transcription YouTube.txt"])
+        let written = workspace.appendingPathComponent(prepared.relativePaths[1])
+        XCTAssertEqual(try String(contentsOf: written, encoding: .utf8), "Bonjour")
+        Attachments.remove(prepared)
+
+        let bad = Attachments.GeneratedFile(name: "script.sh", data: Data("x".utf8))
+        XCTAssertThrowsError(try Attachments.prepare(paths: [], generated: [bad], workspace: workspace, home: home.path, id: "bad"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: workspace.appendingPathComponent("attachments/bad").path))
+    }
+
+    func testRemoveNeverDeletesTheWorkspace() throws {
+        let empty = try Attachments.prepare(paths: [], workspace: workspace, home: home.path, id: "vide")
+        XCTAssertTrue(empty.relativePaths.isEmpty)
+        Attachments.remove(empty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: workspace.path))
+    }
+
+    func testRemoveAllPreparedClearsPendingCopies() throws {
+        let first = try Attachments.prepare(paths: [try make("Documents/a.txt")], workspace: workspace, home: home.path, id: "un")
+        let second = try Attachments.prepare(paths: [try make("Documents/b.txt")], workspace: workspace, home: home.path, id: "deux")
+        let done = try Attachments.prepare(paths: [try make("Documents/c.txt")], workspace: workspace, home: home.path, id: "trois")
+        Attachments.remove(done)
+        Attachments.removeAllPrepared()
+        for prepared in [first, second, done] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: prepared.directory.path), prepared.directory.lastPathComponent)
+        }
+        Attachments.remove(first)  // déjà effacé : sans effet
+        Attachments.removeAllPrepared()
     }
 
     func testAskGeminiPassesFilesToTheProgramAndCleansUp() async throws {
@@ -277,12 +437,219 @@ final class YouTubeTests: XCTestCase {
         XCTAssertTrue(result.text.contains("yt-dlp"))
     }
 
-    func testCaptionFetchRefusesForeignHosts() async {
+    func testCaptionDownloadRefusesForeignHostsBeforeAnyRequest() async {
         for bad in ["http://www.youtube.com/x", "https://evil.com/x", "https://youtube.com.evil.com/x", "file:///etc/hosts"] {
             do {
-                _ = try await ToolHandler.fetchCaptions(URL(string: bad)!)
+                _ = try await YouTubeTranscript.downloadCaptions(URL(string: bad)!)
                 XCTFail(bad)
-            } catch {}
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("hors YouTube"), error.localizedDescription)
+            }
         }
+    }
+
+    func testCaptionURLRule() {
+        func allowed(_ text: String) -> Bool { YouTubeTranscript.isAllowedCaptionURL(URL(string: text)!) }
+        XCTAssertTrue(allowed("https://www.youtube.com/api/timedtext?v=abc&lang=fr"))
+        XCTAssertTrue(allowed("https://youtube.com/api/timedtext"))
+        XCTAssertTrue(allowed("HTTPS://WWW.YOUTUBE.COM/api/timedtext"))
+        XCTAssertFalse(allowed("https://evil.com/api/timedtext"))
+        XCTAssertFalse(allowed("http://www.youtube.com/api/timedtext"))
+        XCTAssertFalse(allowed("https://youtube.com.evil.com/x"))
+        XCTAssertFalse(allowed("https://notyoutube.com/x"))
+        XCTAssertFalse(allowed("https://user:pass@www.youtube.com/x"))
+        XCTAssertFalse(allowed("https://www.youtube.com:8443/x"))
+    }
+
+    func testRedirectsOutsideYouTubeAreRefused() throws {
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        let start = URL(string: "https://www.youtube.com/api/timedtext")!
+        let task = session.dataTask(with: start)  // jamais lancée : aucun accès réseau
+        let response = try XCTUnwrap(HTTPURLResponse(url: start, statusCode: 302, httpVersion: nil, headerFields: nil))
+        func follows(_ target: String) -> Bool {
+            var followed: URLRequest?
+            YouTubeTranscript.captionRedirectGuard.urlSession(session, task: task, willPerformHTTPRedirection: response,
+                                                             newRequest: URLRequest(url: URL(string: target)!)) { followed = $0 }
+            return followed != nil
+        }
+        XCTAssertTrue(follows("https://m.youtube.com/api/timedtext?x=1"))
+        XCTAssertFalse(follows("https://evil.com/x"))
+        XCTAssertFalse(follows("http://www.youtube.com/x"))
+        XCTAssertFalse(follows("https://youtube.com.evil.com/x"))
+    }
+
+    // MARK: - Fins de ligne, paragraphes, extraits
+
+    func testCRLFAndBOMCaptionsAreRead() {
+        let lf = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nPremière ligne\nDeuxième ligne\n\n00:00:03.000 --> 00:00:04.000\nFin\n"
+        let expected = ["Première ligne", "Deuxième ligne", "Fin"]
+        XCTAssertEqual(YouTubeTranscript.parseVTT(lf).map(\.text), expected)
+        XCTAssertEqual(YouTubeTranscript.parseVTT(lf.replacingOccurrences(of: "\n", with: "\r\n")).map(\.text), expected)
+        XCTAssertEqual(YouTubeTranscript.parseVTT("\u{FEFF}" + lf.replacingOccurrences(of: "\n", with: "\r\n")).map(\.text), expected)
+        XCTAssertEqual(YouTubeTranscript.parseVTT(lf.replacingOccurrences(of: "\n", with: "\r")).map(\.text), expected)
+        XCTAssertEqual(YouTubeTranscript.parseVTT(lf.replacingOccurrences(of: "\n", with: "\r\n")).map(\.start), [0, 0, 3])
+    }
+
+    func testUnpunctuatedCaptionsAreSplitIntoParagraphs() {
+        let cues = (0..<60).map { YouTubeTranscript.Cue(start: Double($0) * 2, text: "alors on continue sans ponctuation") }
+        let text = YouTubeTranscript.format(cues, timestamps: false)
+        XCTAssertEqual(text.components(separatedBy: "\n\n").count, 4, "un paragraphe par tranche de 30 s")
+        XCTAssertFalse(text.contains("["))
+        let stamped = YouTubeTranscript.format(cues, timestamps: true)
+        XCTAssertEqual(stamped.components(separatedBy: "\n\n").map { String($0.prefix(7)) }, ["[00:00]", "[00:30]", "[01:00]", "[01:30]"])
+    }
+
+    func testLongTranscriptIsProcessedInLinearTime() {
+        let vtt = "WEBVTT\n\n" + (0..<20_000).map { index in
+            let seconds = index * 3 / 2
+            let start = String(format: "%02d:%02d:%02d.%03d", seconds / 3600, seconds / 60 % 60, seconds % 60, index % 2 * 500)
+            return "\(start) --> \(start)\nvoilà déjà ça été très réussi à Montréal \(index)\n"
+        }.joined(separator: "\n")
+        let parseStart = Date()
+        let cues = YouTubeTranscript.parseVTT(vtt)
+        let parsing = Date().timeIntervalSince(parseStart)
+        // Lecture : marge large (compilation de débogage, machine chargée) ; un temps quadratique dépasserait de loin.
+        XCTAssertLessThan(parsing, 2, "\(parsing) s")
+        XCTAssertEqual(cues.count, 20_000)
+
+        let transcript = YouTubeTranscript.Transcript(title: "t", channel: "c", duration: 30_000, source: "https://youtu.be/x",
+                                                      language: "fr", isAutomatic: true, cues: cues)
+        let start = Date()
+        let plain = transcript.body(timestamps: false)
+        let stamped = transcript.body(timestamps: true)
+        let excerpt = transcript.excerpt(timestamps: true, maxCharacters: 45_000)
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThan(elapsed, 0.5, "\(elapsed) s")
+        XCTAssertGreaterThan(plain.components(separatedBy: "\n\n").count, 900)
+        XCTAssertTrue(stamped.hasPrefix("[00:00] voilà"))
+        XCTAssertFalse(excerpt.isComplete)
+    }
+
+    func testExcerptStopsBetweenCuesAndReportsCoverage() {
+        let cues = (0..<40).map { YouTubeTranscript.Cue(start: Double($0) * 10, text: "réplique numéro \($0)") }
+        let transcript = YouTubeTranscript.Transcript(title: "t", channel: "c", duration: 400, source: "https://youtu.be/x",
+                                                      language: "fr", isAutomatic: false, cues: cues)
+        let full = transcript.excerpt(timestamps: true, maxCharacters: 100_000)
+        XCTAssertTrue(full.isComplete)
+        XCTAssertEqual(full.text, transcript.body(timestamps: true))
+        XCTAssertEqual(full.percent, 100)
+
+        for timestamps in [true, false] {
+            let body = transcript.body(timestamps: timestamps)
+            let part = transcript.excerpt(timestamps: timestamps, maxCharacters: body.count / 2)
+            XCTAssertFalse(part.isComplete)
+            XCTAssertLessThanOrEqual(part.text.count, body.count / 2)
+            XCTAssertTrue(body.hasPrefix(part.text), "l'extrait est le début exact du texte complet")
+            let last = try! XCTUnwrap(part.lastKeptStart)
+            XCTAssertTrue(part.text.hasSuffix("réplique numéro \(Int(last / 10))"), part.text)
+            XCTAssertEqual(part.percent, Int(last / 400 * 100))
+            XCTAssertGreaterThan(part.percent ?? 0, 30)
+            XCTAssertLessThan(part.percent ?? 100, 60)
+        }
+
+        let none = transcript.excerpt(timestamps: true, maxCharacters: 5)
+        XCTAssertEqual(none.text, "")
+        XCTAssertNil(none.lastKeptStart)
+        XCTAssertEqual(none.percent, 0)
+        var unknown = transcript
+        unknown.duration = nil
+        XCTAssertNil(unknown.excerpt(timestamps: true, maxCharacters: 50).percent)
+        XCTAssertTrue(unknown.header.contains("Durée : inconnue"))
+        XCTAssertTrue(transcript.header.contains("Durée : 06:40\n") && transcript.header.contains("(sous-titres publiés)"))
+        XCTAssertTrue(transcript.header.hasSuffix("\n\n"))
+    }
+
+    // MARK: - yt-dlp et récupération complète
+
+    func testYtDlpArgumentsIgnoreConfigurationAndEndWithTheURL() {
+        let url = "https://www.youtube.com/watch?v=abc"
+        let arguments = YouTubeTranscript.ytDlpArguments(url: url)
+        XCTAssertEqual(arguments.first, "--ignore-config")
+        XCTAssertEqual(Array(arguments.suffix(2)), ["--", url])
+        for flag in ["--no-exec", "--no-cookies-from-browser", "--no-cache-dir", "--skip-download", "--dump-single-json", "--no-playlist"] {
+            XCTAssertTrue(arguments.dropLast(2).contains(flag), flag)
+        }
+        XCTAssertEqual(arguments.filter { $0 == "--" }.count, 1)
+    }
+
+    /// Adresses reçues par le faux téléchargement.
+    private final class Recorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var urls: [URL] = []
+        func add(_ url: URL) { lock.lock(); urls.append(url); lock.unlock() }
+        var all: [URL] { lock.lock(); defer { lock.unlock() }; return urls }
+    }
+
+    private static let videoInfo = #"{"title":"Titre test","channel":"Chaîne test","duration":75,"language":"fr","subtitles":{"fr":[{"ext":"vtt","url":"https://www.youtube.com/api/timedtext?lang=fr"}]},"automatic_captions":{"en":[{"ext":"vtt","url":"https://www.youtube.com/api/timedtext?lang=en"}]}}"#
+
+    private func fakeYtDlp(_ body: String = "printf '%s' '\(YouTubeTests.videoInfo)'") throws -> FakeAgent {
+        // Le dossier courant est noté à côté du script, pour vérifier où yt-dlp a été lancé.
+        try FakeAgent(body: "pwd -P > \"$(dirname \"$0\")/cwd.txt\"\n\(body)")
+    }
+
+    func testFetchRunsYtDlpInTheGivenFolderAndReturnsTheTranscript() async throws {
+        let ytDlp = try fakeYtDlp()
+        let folder = ytDlp.directory.appendingPathComponent("youtube-vide")
+        let recorder = Recorder()
+        let vtt = "WEBVTT\r\n\r\n00:00:01.000 --> 00:00:02.000\r\nBonjour le monde\r\n\r\n00:00:40.000 --> 00:00:41.000\r\nSuite\r\n"
+        let transcript = try await YouTubeTranscript.fetch(
+            url: " https://youtu.be/abc ", language: nil, ytDlp: ytDlp.executable, environment: Locator.environment(),
+            workingDirectory: folder, fetchCaptions: { url in recorder.add(url); return Data(vtt.utf8) })
+
+        XCTAssertEqual(ytDlp.calls, [YouTubeTranscript.ytDlpArguments(url: "https://youtu.be/abc")])
+        let cwd = try String(contentsOf: ytDlp.directory.appendingPathComponent("cwd.txt"), encoding: .utf8)
+        XCTAssertEqual(URL(fileURLWithPath: cwd.trimmingCharacters(in: .whitespacesAndNewlines)).resolvingSymlinksInPath().path,
+                       folder.resolvingSymlinksInPath().path)
+        XCTAssertEqual(recorder.all.map(\.absoluteString), ["https://www.youtube.com/api/timedtext?lang=fr"])
+        XCTAssertEqual(transcript.title, "Titre test")
+        XCTAssertEqual(transcript.channel, "Chaîne test")
+        XCTAssertEqual(transcript.duration, 75)
+        XCTAssertEqual(transcript.source, "https://youtu.be/abc")
+        XCTAssertEqual(transcript.language, "fr")
+        XCTAssertFalse(transcript.isAutomatic)
+        XCTAssertEqual(transcript.cues.map(\.text), ["Bonjour le monde", "Suite"])
+        XCTAssertEqual(transcript.header, "Titre : Titre test\nChaîne : Chaîne test\nDurée : 01:15\nSource : https://youtu.be/abc\nLangue : fr (sous-titres publiés)\n\n")
+        XCTAssertEqual(transcript.body(timestamps: true), "[00:01] Bonjour le monde\n\n[00:40] Suite")
+    }
+
+    func testFetchErrorMessages() async throws {
+        func message(_ ytDlp: FakeAgent, executable: String? = nil, url: String = "https://youtu.be/abc", language: String? = nil,
+                     captions: @escaping @Sendable (URL) async throws -> Data = { _ in Data("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nx\n".utf8) }) async -> String {
+            do {
+                _ = try await YouTubeTranscript.fetch(url: url, language: language, ytDlp: executable ?? ytDlp.executable,
+                                                      environment: Locator.environment(),
+                                                      workingDirectory: ytDlp.directory.appendingPathComponent("vide"), fetchCaptions: captions)
+                return "pas d'erreur"
+            } catch {
+                XCTAssertTrue(error is BridgeError, "\(error)")
+                return error.localizedDescription
+            }
+        }
+        let ok = try fakeYtDlp()
+        let invalid = await message(ok, url: "https://example.com/x")
+        XCTAssertTrue(invalid.contains("adresse https de vidéo YouTube"), invalid)
+        XCTAssertTrue(ok.calls.isEmpty, "adresse refusée avant de lancer yt-dlp")
+
+        let failing = try fakeYtDlp("echo 'ERROR: Video unavailable' >&2; exit 1")
+        let unreadable = await message(failing)
+        XCTAssertTrue(unreadable.contains("privée, supprimée") && unreadable.contains("Video unavailable"), unreadable)
+
+        let noTrack = await message(ok, language: "ja")
+        XCTAssertTrue(noTrack.contains("Aucun sous-titre « ja »") && noTrack.contains("Pistes vues : fr, en"), noTrack)
+
+        let empty = await message(ok, captions: { _ in Data("WEBVTT\n\n".utf8) })
+        XCTAssertEqual(empty, "Les sous-titres de la vidéo « Titre test » sont vides.")
+
+        let cancelled = await message(ok, captions: { _ in throw CancellationError() })
+        XCTAssertEqual(cancelled, "Appel annulé.")
+        let urlCancelled = await message(ok, captions: { _ in throw URLError(.cancelled) })
+        XCTAssertEqual(urlCancelled, "Appel annulé.")
+
+        let network = await message(ok, captions: { _ in throw BridgeError.invalid("réponse HTTP 429") })
+        XCTAssertEqual(network, "Téléchargement des sous-titres impossible : réponse HTTP 429")
+
+        let launch = await message(ok, executable: "/nonexistent/yt-dlp")
+        XCTAssertTrue(launch.contains("/nonexistent/yt-dlp"), launch)
     }
 }

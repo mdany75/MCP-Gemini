@@ -25,7 +25,10 @@ final class ToolHandlerTests: XCTestCase {
         XCTAssertFalse(second.isError, second.text)
         XCTAssertTrue(second.text.contains("échange 2/5"))
         let args = agent.calls[1]
-        XCTAssertEqual(args[args.firstIndex(of: "--print")! + 1], "deux")
+        let prompt = args[args.firstIndex(of: "--print")! + 1]
+        XCTAssertTrue(prompt.hasPrefix("Rappel du pont"), "un rappel court de la lecture seule ouvre chaque suite")
+        XCTAssertTrue(prompt.hasSuffix("\n\ndeux"))
+        XCTAssertFalse(prompt.contains("Cadre fixé"), "la consigne complète n'est envoyée qu'au premier tour")
         XCTAssertEqual(args[args.firstIndex(of: "--conversation")! + 1], "conv-1")
     }
 
@@ -104,7 +107,9 @@ final class ToolHandlerTests: XCTestCase {
         let nasty = "$(touch /tmp/pwned); `id` \"quote\" 'apos' ; rm -rf ~"
         _ = await agent.handler(settings: agent.settings { $0.preamble = "" }).call(name: "ask_gemini", arguments: ["prompt": .string(nasty)])
         let args = try XCTUnwrap(agent.calls.first)
-        XCTAssertEqual(args[args.firstIndex(of: "--print")! + 1], nasty)
+        let prompt = args[args.firstIndex(of: "--print")! + 1]
+        XCTAssertTrue(prompt.hasPrefix("Cadre fixé par le pont"), "la consigne fixe reste même sans préambule")
+        XCTAssertTrue(prompt.hasSuffix("\n\n" + nasty))
         XCTAssertFalse(FileManager.default.fileExists(atPath: "/tmp/pwned"))
     }
 
@@ -143,24 +148,30 @@ final class ToolHandlerTests: XCTestCase {
     }
 
     func testSlowAnswerReturnsAJobIdThenTheResult() async throws {
-        let agent = try FakeAgent(body: "sleep 3; " + FakeAgent.okJSON)
+        let agent = try FakeAgent(body: FakeAgent.waitForRelease + FakeAgent.okJSON)
         let handler = agent.handler(settings: agent.settings { $0.waitSeconds = 1 })
         let first = await handler.call(name: "ask_gemini", arguments: ["prompt": "q"])
         XCTAssertFalse(first.isError, first.text)
         XCTAssertTrue(first.text.contains("travaille encore"))
+        XCTAssertTrue(first.text.contains("ne relance pas ask_gemini"))
         let id = try XCTUnwrap(first.text.components(separatedBy: "job_id = \"").dropFirst().first?.components(separatedBy: "\"").first)
         let still = await handler.call(name: "gemini_result", arguments: ["job_id": .string(id)])
-        XCTAssertTrue(still.text.contains("travaille encore") || still.text.hasPrefix("Bonjour"))
-        let done = await handler.call(name: "gemini_result", arguments: ["job_id": .string(id)])
-        let final = done.text.hasPrefix("Bonjour de Gemini") ? done : await handler.call(name: "gemini_result", arguments: ["job_id": .string(id)])
+        XCTAssertTrue(still.text.contains("travaille encore"), "tant que le faux programme n'est pas libéré")
+        agent.release()
+        var final = await handler.call(name: "gemini_result", arguments: ["job_id": .string(id)])
+        for _ in 0..<10 where !final.text.hasPrefix("Bonjour") {
+            final = await handler.call(name: "gemini_result", arguments: ["job_id": .string(id)])
+        }
         XCTAssertTrue(final.text.hasPrefix("Bonjour de Gemini"), final.text)
         XCTAssertTrue(final.text.contains("session_id"))
+        // Remise une seconde fois (client qui a perdu la réponse), avec une mention.
         let again = await handler.call(name: "gemini_result", arguments: ["job_id": .string(id)])
-        XCTAssertTrue(again.isError, "une réponse n'est remise qu'une fois")
+        XCTAssertFalse(again.isError)
+        XCTAssertTrue(again.text.hasPrefix("(Réponse déjà remise"))
     }
 
     func testTooManyRunningJobsAreRefused() async throws {
-        let agent = try FakeAgent(body: "sleep 4; " + FakeAgent.okJSON)
+        let agent = try FakeAgent(body: FakeAgent.waitForRelease + FakeAgent.okJSON)
         let handler = agent.handler(settings: agent.settings { $0.waitSeconds = 1; $0.maxCallsPer10Minutes = 50 })
         for _ in 0..<JobBoard.maxRunning {
             let r = await handler.call(name: "ask_gemini", arguments: ["prompt": "q"])
@@ -169,7 +180,8 @@ final class ToolHandlerTests: XCTestCase {
         let refused = await handler.call(name: "ask_gemini", arguments: ["prompt": "q"])
         XCTAssertTrue(refused.isError)
         XCTAssertTrue(refused.text.contains("en cours"))
-        ProcessRegistry.terminateAll(grace: 3)
+        XCTAssertTrue(refused.text.contains("cancel_gemini"))
+        agent.release()
     }
 
     func testModelAndEffortArgumentsReachTheProgram() async throws {
@@ -211,7 +223,7 @@ final class ToolHandlerTests: XCTestCase {
     func testToolDefinitionsAreWellFormed() throws {
         let handler = try FakeAgent(body: "true").handler()
         let names = handler.definitions.compactMap { $0["name"]?.string }
-        XCTAssertEqual(names, ["ask_gemini", "youtube_transcript", "gemini_result", "gemini_status", "reset_gemini_session"])
+        XCTAssertEqual(names, ["ask_gemini", "youtube_transcript", "gemini_result", "cancel_gemini", "gemini_status", "reset_gemini_session"])
         for definition in handler.definitions {
             XCTAssertEqual(definition["inputSchema"]?["type"]?.string, "object")
             XCTAssertNotNil(definition["description"]?.string)
@@ -270,7 +282,7 @@ final class MCPServerTests: XCTestCase {
     }
 
     func testPingAnswersWhileAToolCallIsRunning() async throws {
-        let agent = try FakeAgent(body: "sleep 3; " + FakeAgent.okJSON)
+        let agent = try FakeAgent(body: FakeAgent.waitForRelease + FakeAgent.okJSON)
         let s = server(agent)
         let sink = Sink()
         s.receive(line: #"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"ask_gemini","arguments":{"prompt":"q"}}}"#, send: sink.send)
@@ -279,21 +291,23 @@ final class MCPServerTests: XCTestCase {
         let ping = await sink.waitForResponse(id: 11, timeout: 2)
         XCTAssertNotNil(ping, "ping doit répondre sans attendre Gemini")
         XCTAssertNil(sink.response(id: 10))
+        agent.release()
         let call = await sink.waitForResponse(id: 10)
         XCTAssertEqual(call?["result"]?["isError"]?.bool, false)
     }
 
     func testCancelledRequestStopsWaitingButGeminiKeepsWorking() async throws {
         // Claude Desktop annule l'appel à ~60 s : la réponse doit rester récupérable.
-        let agent = try FakeAgent(body: "sleep 3; " + FakeAgent.okJSON)
+        let agent = try FakeAgent(body: FakeAgent.waitForRelease + FakeAgent.okJSON)
         let s = server(agent)
         let sink = Sink()
-        let start = Date()
         s.receive(line: #"{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"ask_gemini","arguments":{"prompt":"q"}}}"#, send: sink.send)
         try await Task.sleep(nanoseconds: 700_000_000)
         s.receive(line: #"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":20}}"#, send: sink.send)
-        _ = await sink.waitForResponse(id: 20, timeout: 5)
-        XCTAssertLessThan(Date().timeIntervalSince(start), 3, "l'attente s'arrête dès l'annulation")
+        // Spécification MCP : une requête annulée ne reçoit pas de réponse.
+        let answered = await sink.waitForResponse(id: 20, timeout: 1.5)
+        XCTAssertNil(answered)
+        agent.release()
         // Le travail continue : sans job_id (jamais reçu), gemini_result prend la demande la plus récente.
         s.receive(line: #"{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"gemini_result","arguments":{}}}"#, send: sink.send)
         let result = await sink.waitForResponse(id: 21, timeout: 15)

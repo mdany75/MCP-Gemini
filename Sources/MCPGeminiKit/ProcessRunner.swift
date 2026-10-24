@@ -7,6 +7,8 @@ public struct ProcessResult: Sendable {
     public var timedOut: Bool
     /// Texte d'un marqueur d'arrêt anticipé (ex. « Authentication required »), s'il a été vu.
     public var abortedOn: String?
+    /// Raison donnée par le lecteur de la sortie (`onStdout`) pour arrêter le programme, s'il l'a fait.
+    public var stopReason: String?
     public var truncated: Bool
 }
 
@@ -21,6 +23,10 @@ public enum ProcessError: Error, LocalizedError {
 }
 
 /// Programmes en cours : permet de les arrêter tous (arrêt du serveur) avant de quitter.
+///
+/// `Process` place chaque programme dans son propre groupe (numéro de groupe = pid) : les signaux visent
+/// le groupe entier (`kill(-pid, …)`), pour ne laisser aucun petit-enfant orphelin. Un numéro de groupe
+/// n'est pas réutilisé tant que le groupe existe.
 public enum ProcessRegistry {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var pids = Set<Int32>()
@@ -30,13 +36,18 @@ public enum ProcessRegistry {
 
     public static var runningCount: Int { lock.lock(); defer { lock.unlock() }; return pids.count }
 
-    /// SIGTERM à tous, attente jusqu'à `grace` secondes, puis SIGKILL des survivants.
+    /// Signal au groupe du programme ; au processus seul si le groupe n'existe pas (ou plus).
+    static func signal(_ pid: Int32, _ sig: Int32) {
+        if kill(-pid, sig) != 0 { kill(pid, sig) }
+    }
+
+    /// SIGTERM à tous les groupes, attente jusqu'à `grace` secondes, puis SIGKILL des groupes restants.
     public static func terminateAll(grace: TimeInterval = 3) {
         lock.lock()
         let snapshot = pids
         lock.unlock()
         guard !snapshot.isEmpty else { return }
-        snapshot.forEach { kill($0, SIGTERM) }
+        snapshot.forEach { signal($0, SIGTERM) }
         let deadline = Date().addingTimeInterval(grace)
         while Date() < deadline {
             lock.lock()
@@ -48,12 +59,13 @@ public enum ProcessRegistry {
         lock.lock()
         let survivors = pids
         lock.unlock()
-        survivors.forEach { kill($0, SIGKILL) }
+        survivors.forEach { signal($0, SIGKILL) }
     }
 }
 
 /// Lance un programme externe sans bloquer : lecture simultanée de stdout et stderr (pas
 /// d'interblocage sur les gros volumes), délai maximal, annulation, arrêt anticipé sur marqueur.
+/// `onStdout` reçoit la sortie au fil de l'eau (hors verrou) et peut demander l'arrêt en rendant une raison.
 public enum ProcessRunner {
     /// Au-delà, la sortie est coupée (le résultat est signalé `truncated`).
     public static let maxOutputBytes = 8 * 1024 * 1024
@@ -64,9 +76,10 @@ public enum ProcessRunner {
         environment: [String: String],
         workingDirectory: URL,
         timeout: TimeInterval,
-        abortMarkers: [String] = []
+        abortMarkers: [String] = [],
+        onStdout: (@Sendable (Data) -> String?)? = nil
     ) async throws -> ProcessResult {
-        let state = RunState(abortMarkers: abortMarkers)
+        let state = RunState(abortMarkers: abortMarkers, onStdout: onStdout)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ProcessResult, Error>) in
                 state.start(executable: executable, arguments: arguments, environment: environment,
@@ -84,20 +97,27 @@ private final class RunState: @unchecked Sendable {
     private static let markerWindow = 4096
     private let lock = NSLock()
     private let abortMarkers: [String]
+    private let onStdout: (@Sendable (Data) -> String?)?
     private var process: Process?
     private var continuation: CheckedContinuation<ProcessResult, Error>?
     private var stdout = Data()
     private var stderr = Data()
     private var timedOut = false
     private var abortedOn: String?
+    private var stopReason: String?
     private var truncated = false
+    private var outFull = false
+    private var errFull = false
+    /// Le pid est inscrit dans ProcessRegistry (et doit en être retiré).
+    private var registered = false
     private var cancelled = false
     private var exited = false
     private var exitCode: Int32 = 0
     private var finished = false
 
-    init(abortMarkers: [String]) {
+    init(abortMarkers: [String], onStdout: (@Sendable (Data) -> String?)?) {
         self.abortMarkers = abortMarkers
+        self.onStdout = onStdout
     }
 
     func start(executable: String, arguments: [String], environment: [String: String], workingDirectory: URL,
@@ -144,8 +164,9 @@ private final class RunState: @unchecked Sendable {
             self.lock.lock()
             self.exited = true
             self.exitCode = proc.terminationStatus
+            let wasRegistered = self.registered
             self.lock.unlock()
-            ProcessRegistry.remove(proc.processIdentifier)
+            if wasRegistered { ProcessRegistry.remove(proc.processIdentifier) }
             // Les données restantes arrivent avant la fin de fichier ; un petit-enfant qui garderait le
             // tube ouvert ne doit pas bloquer : on attend au plus 2 s.
             let waiter = DispatchGroup()
@@ -162,7 +183,14 @@ private final class RunState: @unchecked Sendable {
 
         do {
             try process.run()
-            ProcessRegistry.add(process.processIdentifier)
+            // Sous le verrou : un programme très court a pu finir (et passer son gestionnaire de fin)
+            // avant cette ligne ; il ne faut alors pas laisser un pid périmé dans le registre.
+            lock.lock()
+            if !exited {
+                ProcessRegistry.add(process.processIdentifier)
+                registered = true
+            }
+            lock.unlock()
         } catch {
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
@@ -192,8 +220,10 @@ private final class RunState: @unchecked Sendable {
         lock.lock()
         let current = isOut ? stdout : stderr
         var marker: String?
-        if current.count + chunk.count > ProcessRunner.maxOutputBytes {
+        if (isOut ? outFull : errFull) || current.count + chunk.count > ProcessRunner.maxOutputBytes {
+            // Une fois plein, plus rien n'est ajouté à ce flux : la sortie gardée reste d'un seul tenant.
             truncated = true
+            if isOut { outFull = true } else { errFull = true }
         } else {
             if isOut { stdout.append(chunk) } else { stderr.append(chunk) }
             if abortedOn == nil, !abortMarkers.isEmpty {
@@ -209,24 +239,33 @@ private final class RunState: @unchecked Sendable {
         }
         lock.unlock()
         if marker != nil { stop(timedOut: false) }
+        // Hors du verrou : le lecteur peut prendre son temps sans bloquer la lecture de stderr.
+        if isOut, let onStdout, let reason = onStdout(chunk) {
+            lock.lock()
+            let first = stopReason == nil
+            if first { stopReason = reason }
+            lock.unlock()
+            if first { stop(timedOut: false) }
+        }
     }
 
-    /// Demande l'arrêt, puis force au bout de 3 s si le processus ne part pas.
+    /// Demande l'arrêt du groupe, puis force au bout de 3 s si le processus ne part pas.
     private func stop(timedOut: Bool) {
         lock.lock()
-        if timedOut { self.timedOut = true }
+        // Un programme déjà sorti (on attend seulement la fin de ses tubes) n'a pas dépassé le délai.
+        if timedOut && !exited { self.timedOut = true }
         let process = self.process
         let alreadyExited = exited
         lock.unlock()
         guard let process, !alreadyExited, process.isRunning else { return }
-        process.terminate()
         let pid = process.processIdentifier
+        ProcessRegistry.signal(pid, SIGTERM)
         DispatchQueue.global().asyncAfter(deadline: .now() + 3) { [weak self] in
             guard let self else { return }
             self.lock.lock()
             let done = self.exited
             self.lock.unlock()
-            if !done { kill(pid, SIGKILL) }
+            if !done { ProcessRegistry.signal(pid, SIGKILL) }
         }
     }
 
@@ -242,7 +281,7 @@ private final class RunState: @unchecked Sendable {
         let result = ProcessResult(
             stdout: String(decoding: stdout, as: UTF8.self),
             stderr: String(decoding: stderr, as: UTF8.self),
-            exitCode: exitCode, timedOut: timedOut, abortedOn: abortedOn, truncated: truncated)
+            exitCode: exitCode, timedOut: timedOut, abortedOn: abortedOn, stopReason: stopReason, truncated: truncated)
         lock.unlock()
         if let error {
             continuation.resume(throwing: error)
@@ -254,12 +293,14 @@ private final class RunState: @unchecked Sendable {
     }
 }
 
-private final class OnceFlag: @unchecked Sendable {
+public final class OnceFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var fired = false
 
+    public init() {}
+
     /// `true` la première fois seulement.
-    func fire() -> Bool {
+    public func fire() -> Bool {
         lock.lock()
         defer { lock.unlock() }
         if fired { return false }
