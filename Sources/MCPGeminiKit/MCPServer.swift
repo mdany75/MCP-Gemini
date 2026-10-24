@@ -30,6 +30,8 @@ public final class MCPServer: @unchecked Sendable {
     private let tools: ToolHandler
     /// Intervalle entre deux signes de vie quand rien ne change.
     private let progressInterval: TimeInterval
+    /// Journal (stderr) : le nom du client à chaque connexion, pour les diagnostics.
+    private let log: @Sendable (String) -> Void
 
     private let lock = NSLock()
     private var inFlight: [String: Task<Void, Never>] = [:]
@@ -39,8 +41,9 @@ public final class MCPServer: @unchecked Sendable {
     private var closed = false
 
     public init(name: String, version: String, instructions: String, tools: ToolHandler,
-                progressInterval: TimeInterval = 10) {
+                progressInterval: TimeInterval = 10, log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.progressInterval = progressInterval
+        self.log = log
         self.name = name
         self.version = version
         self.instructions = instructions
@@ -161,7 +164,10 @@ public final class MCPServer: @unchecked Sendable {
         switch method {
         case "initialize":
             // Claude Code (« claude-code ») n'a pas la coupure de 60 s de Claude Desktop : ask_gemini l'attend jusqu'au bout.
-            tools.setClient(name: params["clientInfo"]?["name"]?.string)
+            let client = params["clientInfo"]?["name"]?.string
+            tools.setClient(name: client)
+            log("client : \(client ?? "inconnu") \(params["clientInfo"]?["version"]?.string ?? "")"
+                + (ToolHandler.isClaudeCode(client) ? " (attente jusqu'à la réponse)" : " (job_id après l'attente réglée)"))
             let requested = params["protocolVersion"]?.string ?? ""
             let negotiated = Self.supportedProtocolVersions.contains(requested)
                 ? requested : Self.supportedProtocolVersions[0]

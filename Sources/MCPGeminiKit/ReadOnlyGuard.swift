@@ -52,11 +52,16 @@ public final class ReadOnlyGuard: @unchecked Sendable {
     private var conversation: String?
     private var lost = false
     private var subagentStarted = false
+    /// Un sous-agent annoncé sans son type : son type réel est lu dans le dossier d'agy.
+    private var subagentToVerify = false
+    private var verifiedSubagents = Set<String>()
+    private let startedAt: Date
 
     /// - Parameters:
     ///   - expectedConversation: conversation reprise (`--conversation`), pour repérer une conversation perdue.
     ///   - attachments: dossier des fichiers joints à cette demande, seul sous-dossier du dossier de travail lisible.
-    public init(expectedConversation: String?, home: String, workspace: URL, attachments: URL?) {
+    public init(expectedConversation: String?, home: String, workspace: URL, attachments: URL?, startedAt: Date = Date()) {
+        self.startedAt = startedAt
         self.expectedConversation = expectedConversation
         brain = GeneratedFiles.brainDirectory(home: home).standardizedFileURL
         self.workspace = workspace.standardizedFileURL
@@ -68,6 +73,8 @@ public final class ReadOnlyGuard: @unchecked Sendable {
 
     /// Raison d'arrêter la demande, ou `nil` pour la laisser continuer.
     public func inspect(_ event: StreamEvent) -> String? {
+        // Un sous-agent annoncé par son seul rôle : son type réel (écrit par agy) est vérifié à chaque événement.
+        if let reason = verifySubagents() { return reason }
         switch event {
         case .started(let start):
             lock.lock()
@@ -97,11 +104,21 @@ public final class ReadOnlyGuard: @unchecked Sendable {
     func check(tool: String, parameters: JSONValue?) -> String? {
         if tool == "invoke_subagent" {
             let types = parameters?["subagent_types"]?.array?.compactMap(\.string) ?? []
+            let roles = parameters?["subagent_roles"]?.array?.compactMap(\.string) ?? []
             if !types.isEmpty, types.allSatisfy({ Self.allowedSubagents.contains(Self.subagentName($0)) }) {
                 lock.lock()
                 subagentStarted = true
                 lock.unlock()
                 return nil
+            }
+            if types.isEmpty, !roles.isEmpty {
+                // Type absent de l'événement : le rôle ne prouve rien (libellé libre). On laisse partir, et le type
+                // réel est vérifié dans le dossier d'agy dès maintenant puis à chaque événement et à la fin.
+                lock.lock()
+                subagentStarted = true
+                subagentToVerify = true
+                lock.unlock()
+                return verifySubagents()
             }
             let names = types.isEmpty ? "" : " (\(types.joined(separator: ", ")))"
             return "Gemini a voulu lancer un sous-agent\(names), interdit en lecture seule : demande arrêtée par le pont."
@@ -164,6 +181,35 @@ public final class ReadOnlyGuard: @unchecked Sendable {
             }
         }
         return parameters.map(walk) ?? []
+    }
+
+    /// Type réel des sous-agents lancés pendant cette demande, d'après les fichiers qu'agy écrit dans
+    /// `brain/<conversation>/.system_generated/subagents/` (`subagentDescriptor.typeName`). Rend une raison d'arrêter
+    /// si l'un d'eux n'est pas permis. Sans effet tant qu'aucun sous-agent n'a été annoncé sans son type.
+    public func verifySubagents() -> String? {
+        lock.lock()
+        let pending = subagentToVerify
+        let id = conversation
+        let known = verifiedSubagents
+        lock.unlock()
+        guard pending, let id, GeneratedFiles.isSafeIdentifier(id) else { return nil }
+        let folder = brain.appendingPathComponent(id, isDirectory: true).appendingPathComponent(".system_generated/subagents", isDirectory: true)
+        let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
+        guard let entries = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys) else { return nil }
+        for entry in entries where entry.pathExtension == "json" && !known.contains(entry.lastPathComponent) {
+            guard let info = try? entry.resourceValues(forKeys: Set(keys)), info.isRegularFile == true,
+                  (info.contentModificationDate ?? .distantPast) >= startedAt.addingTimeInterval(-2),
+                  (info.fileSize ?? 0) <= 1_048_576 else { continue }
+            guard let data = FileManager.default.contents(atPath: entry.path), let json = try? JSONCoding.parse(data) else { continue }
+            let type = json["subagentDescriptor"]?["typeName"]?.string ?? json["typeName"]?.string ?? ""
+            guard Self.allowedSubagents.contains(Self.subagentName(type)) else {
+                return "Gemini a lancé un sous-agent de type « \(type.isEmpty ? "inconnu" : type) », interdit en lecture seule : demande arrêtée par le pont."
+            }
+            lock.lock()
+            verifiedSubagents.insert(entry.lastPathComponent)
+            lock.unlock()
+        }
+        return nil
     }
 
     /// Valeurs des paramètres qui désignent un chemin (Path, AbsolutePath, SearchDirectory, TargetFile, ImagePaths, Uri…).

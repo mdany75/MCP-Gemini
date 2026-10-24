@@ -39,7 +39,7 @@ final class AttachmentsTests: XCTestCase {
         let key = try make(".ssh/id_rsa.txt")
         let hidden = try make("Documents/.secret.txt")
         let env = try make("Documents/projet/.env")
-        let script = try make("Documents/run.sh")
+        let script = try make("Documents/run.command")
         let keychain = try make("Library/Keychains/x.txt")
         let tooMany = Array(repeating: ok, count: Attachments.maxFiles + 1)
         let cases: [[String]] = [[key], [hidden], [env], [script], [keychain], ["relatif/a.txt"], [home.path + "/Documents/absent.txt"], [home.path + "/Documents"], tooMany]
@@ -227,7 +227,7 @@ final class AttachmentsTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: written, encoding: .utf8), "Bonjour")
         Attachments.remove(prepared)
 
-        let bad = Attachments.GeneratedFile(name: "script.sh", data: Data("x".utf8))
+        let bad = Attachments.GeneratedFile(name: "programme.exe", data: Data("x".utf8))
         XCTAssertThrowsError(try Attachments.prepare(paths: [], generated: [bad], workspace: workspace, home: home.path, id: "bad"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: workspace.appendingPathComponent("attachments/bad").path))
     }

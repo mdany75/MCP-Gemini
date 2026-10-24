@@ -133,13 +133,21 @@ public final class ToolHandler: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Claude Code s'annonce « claude-code » ou « Claude Code » selon le chemin de connexion.
+    static func isClaudeCode(_ name: String?) -> Bool {
+        guard let name else { return false }
+        let normalized = name.trimmingCharacters(in: .whitespaces).lowercased()
+            .replacingOccurrences(of: " ", with: "-").replacingOccurrences(of: "_", with: "-")
+        return normalized == claudeCodeClient || normalized.hasPrefix(claudeCodeClient + "-")
+    }
+
     /// Attente par appel avant de rendre un `job_id`. Claude Code n'a pas la coupure de 60 s : il attend la
     /// réponse jusqu'au bout (les notifications de progression entretiennent son délai d'inactivité).
     var waitSeconds: TimeInterval {
         lock.lock()
         let client = clientName
         lock.unlock()
-        return client == Self.claudeCodeClient ? TimeInterval(settings.effectiveTimeout + 75) : TimeInterval(settings.effectiveWait)
+        return Self.isClaudeCode(client) ? TimeInterval(settings.effectiveTimeout + 75) : TimeInterval(settings.effectiveWait)
     }
 
     // MARK: - Définitions
@@ -168,7 +176,7 @@ public final class ToolHandler: @unchecked Sendable {
                     "properties": [
                         "prompt": ["type": "string", "maxLength": .number(Double(Self.maxPromptCharacters)), "description": "La demande, complète et autonome."],
                         "session_id": ["type": "string", "description": "Identifiant renvoyé par un appel précédent, pour poursuivre la même conversation ; \"last\" pour la plus récente. Omettre pour en ouvrir une nouvelle."],
-                        "files": ["type": "array", "maxItems": .number(Double(Attachments.maxFiles)), "items": ["type": "string"], "description": "Fichiers à joindre (chemins complets, 5 au plus, 20 Mo chacun) : images (png, jpg, gif, webp, heic), PDF, texte (txt, md, csv, tsv, json, log), dans Bureau, Documents, Téléchargements ou Images. Gemini les lit ; leur contenu est envoyé à Google et reste dans l'historique local d'agy. Effacés après chaque demande : les repasser pour une question de suivi."],
+                        "files": ["type": "array", "maxItems": .number(Double(Attachments.maxFiles)), "items": ["type": "string"], "description": "Fichiers à joindre (chemins complets, 5 au plus, 20 Mo chacun) : images (png, jpg, gif, webp, heic), PDF, texte (txt, md, csv, tsv, json, log), code source (swift, py, js, ts, html, css, sql, yaml…), dans Bureau, Documents, Téléchargements ou Images. Gemini les lit ; leur contenu est envoyé à Google et reste dans l'historique local d'agy. Effacés après chaque demande : les repasser pour une question de suivi."],
                         "youtube_url": ["type": "string", "description": "Adresse d'une vidéo YouTube à analyser : le pont récupère ses sous-titres complets (yt-dlp) et les joint comme fichier ; la question va dans prompt. Accepte aussi `language` (code des sous-titres)."],
                         "language": ["type": "string", "description": "Avec youtube_url : langue des sous-titres (en, fr…). Par défaut, la langue d'origine de la vidéo."],
                         "model": ["type": "string", "description": .string("Modèle, à choisir d'après la demande (\(Self.choiceGuide)) ; si l'utilisateur en nomme un, le sien. Par Antigravity, des modèles non Google : opus, sonnet, gpt (medium seulement), seulement si l'utilisateur les demande ; ou identifiant complet de `agy models`. Sans model, le serveur prend \(Self.defaultModelText(settings)).")],
@@ -464,8 +472,13 @@ public final class ToolHandler: @unchecked Sendable {
         if let conversation { GeneratedFiles.protect(conversationId: conversation, home: home) }
         let steps = context.activity.allSteps
 
+        // Arrêt par le garde-fou : la conversation d'agy contient l'action interdite. La session l'oublie, et la suite
+        // rejouera l'historique dans une nouvelle conversation.
+        let keptConversation = reply.stoppedByGuard ? nil : conversation
+        if reply.stoppedByGuard { await store.forgetConversation(id: session.id) }
+
         if let error = reply.error, produced.images.isEmpty {
-            await store.abort(id: session.id, conversationId: conversation)
+            await store.abort(id: session.id, conversationId: keptConversation)
             var text = "Gemini n'a pas pu répondre : \(error)."
             if let summary = ActivityLog.summary(steps) { text += "\n\nDémarche jusque-là : \(summary)." }
             if !reply.deniedActions.isEmpty { text += "\nActions refusées à Gemini (lecture seule) : \(reply.deniedActions.joined(separator: ", "))." }
@@ -473,14 +486,15 @@ public final class ToolHandler: @unchecked Sendable {
             if !partial.isEmpty { text += "\n\nRéponse partielle :\n\(Self.clip(partial, Self.maxResponseCharacters - produced.text.count))" }
             text += produced.text
             text += "\n\n[session_id: \(session.id) — cet échec ne compte pas dans la limite"
-                + (conversation != nil ? " ; une relance avec ce session_id reprend la même conversation" : "") + "]"
+                + (reply.stoppedByGuard ? " ; une relance avec ce session_id rejoue l'historique dans une nouvelle conversation, sans l'action interdite"
+                    : keptConversation != nil ? " ; une relance avec ce session_id reprend la même conversation" : "") + "]"
             return .fail(text)
         }
         // Le pont a arrêté Gemini après qu'il a produit des images (souvent : une copie refusée) : le travail est fait.
-        if let error = reply.error { notes.append("Gemini a ensuite été arrêté : \(error)") }
+        if let error = reply.error { notes.append("Gemini a ensuite été arrêté : \(error) ; la suite rejouera l'historique dans une nouvelle conversation") }
 
         let names = attached.map { "\n[Fichiers joints : " + $0.relativePaths.map { ($0 as NSString).lastPathComponent }.joined(separator: ", ") + "]" } ?? ""
-        await store.finish(id: session.id, prompt: prompt + names, response: reply.response, conversationId: conversation)
+        await store.finish(id: session.id, prompt: prompt + names, response: reply.response, conversationId: keptConversation)
 
         var answer = reply.response.trimmingCharacters(in: .whitespacesAndNewlines)
         if answer.isEmpty, !produced.images.isEmpty { answer = "(Gemini n'a pas écrit de texte : voir les fichiers produits ci-dessous.)" }
@@ -596,7 +610,8 @@ public final class ToolHandler: @unchecked Sendable {
         if kind == .agy {
             // Les conversations d'agy (demandes, fichiers lus, réponses) ne sont lisibles que par l'utilisateur.
             GeneratedFiles.protectBrain(home: home)
-            let readOnly = ReadOnlyGuard(expectedConversation: conversationId, home: home, workspace: workspace, attachments: attachments)
+            let readOnly = ReadOnlyGuard(expectedConversation: conversationId, home: home, workspace: workspace,
+                                         attachments: attachments, startedAt: activity.startedAt)
             guardian = readOnly
             onStdout = { chunk in
                 var reason: String?
@@ -610,7 +625,13 @@ public final class ToolHandler: @unchecked Sendable {
             // Marge sur le délai propre du programme (--print-timeout) pour recevoir sa réponse partielle.
             timeout: TimeInterval(timeout + 15), abortMarkers: Backend.authMarkers, onStdout: onStdout)
         if guardian?.conversationLost == true { return (BridgeReply(response: ""), true) }
-        return (Backend.parse(kind: kind, result: result, timeoutSeconds: timeout, activity: kind == .agy ? activity : nil), false)
+        var reply = Backend.parse(kind: kind, result: result, timeoutSeconds: timeout, activity: kind == .agy ? activity : nil)
+        // Dernière vérification du type réel des sous-agents lancés sans type annoncé (leur fichier a pu arriver tard).
+        if !reply.stoppedByGuard, let reason = guardian?.verifySubagents() {
+            reply.error = reason
+            reply.stoppedByGuard = true
+        }
+        return (reply, false)
     }
 
     // MARK: - Fichiers produits par Gemini
@@ -652,7 +673,9 @@ public final class ToolHandler: @unchecked Sendable {
         if awaiting {
             lines.append("⏸ Gemini attend l'accord sur ce plan avant d'agir. Montre-le à l'utilisateur ; s'il l'approuve (ou si "
                 + "le plan fait exactement ce qu'il a demandé, comme générer l'image demandée), rappelle ask_gemini avec le même "
-                + "session_id et « Plan approuvé : exécute-le. ».")
+                + "session_id et « Plan approuvé : exécute-le. ». En lecture seule, un plan ne peut aboutir qu'à des recherches, une "
+                + "analyse, un document dans le dossier de conversation ou une image : s'il prévoit une commande, la création ou la "
+                + "modification de fichiers ailleurs, le pont arrêtera Gemini ; dis-le à l'utilisateur au lieu d'approuver.")
         }
         output.text = "\n\nFichiers produits par Gemini (dossier de sa conversation agy) :\n" + lines.joined(separator: "\n")
         return output

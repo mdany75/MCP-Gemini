@@ -1,5 +1,16 @@
 # Journal des versions
 
+## 0.7 — 2026-10-24
+
+Six améliorations tirées de la comparaison entre les suggestions de Claude et celles de Gemini.
+
+- Claude Code reconnu sous ses différents noms (« claude-code », « Claude Code »…) : il attend la réponse au lieu de recevoir un `job_id` après 40 s. Le serveur écrit dans son journal le nom de chaque client.
+- Sous-agent d'images : son rôle, libellé libre, n'est plus jamais pris pour son type. Annoncé sans type, il est vérifié dans le fichier qu'agy écrit pour lui (`subagentDescriptor.typeName`), à chaque événement et à la fin.
+- Après un arrêt par le garde-fou, la session oublie la conversation d'agy qui contient l'action interdite : la suite rejoue l'historique dans une nouvelle conversation.
+- Fichiers de code source acceptés en pièce jointe (swift, py, js, ts, html, css, sql, yaml…), contrôlés comme le texte.
+- Note d'approbation d'un plan : en lecture seule, un plan ne peut aboutir qu'à des recherches, une analyse, un document ou une image.
+- Secrets cherchés aussi dans le texte et les métadonnées des PDF et dans les métadonnées des images ; un PDF protégé par mot de passe est refusé.
+
 ## 0.6 — 2026-10-24
 
 - Choix automatique du modèle et de l'effort : avec `/gemini <question>`, Claude analyse la question et passe toujours `model` et `effort` (flash + low pour un fait simple, flash + medium pour une petite synthèse, argon + medium pour une recherche approfondie ou un long document, argon + high pour un raisonnement difficile). Plus de valeurs par défaut du serveur ; un modèle ou un effort tapé par l'utilisateur l'emporte toujours.

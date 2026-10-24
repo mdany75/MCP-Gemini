@@ -97,7 +97,8 @@ func serve() {
     let settings = loadSettings()
     let handler = makeHandler(settings)
     let server = MCPServer(name: ServerInfo.name, version: ServerInfo.version,
-                           instructions: ServerInfo.instructions(settings: settings), tools: handler)
+                           instructions: ServerInfo.instructions(settings: settings), tools: handler,
+                           log: { log($0) })
     log("démarré (version \(ServerInfo.version), programme : \(settings.backend.rawValue))")
     settings.warnings.forEach { log($0) }
     // Pièces jointes oubliées par un arrêt brutal (les instances partagent le dossier : seulement les vieilles).

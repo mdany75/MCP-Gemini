@@ -17,7 +17,7 @@ $ARGUMENTS
 Mot de commande (premier mot, facultatif) :
 - `suite` ou `+` : question de suivi. Repasse le dernier `session_id` vu dans cette conversation ; s'il n'y en a pas, `session_id` = "last" (la session la plus récente, même d'une session Claude précédente).
 - `nouveau` : nouvelle conversation, sans `session_id`.
-- `ok` ou `approuve` : seulement si la dernière réponse de Gemini attend l'accord sur un plan. Rappelle alors `ask_gemini` avec ce `session_id` et « Plan approuvé : exécute-le. ». Sinon, `ok` fait partie de la question.
+- `ok` ou `approuve` : seulement si la dernière réponse de Gemini attend l'accord sur un plan. Rappelle alors `ask_gemini` avec ce `session_id` et « Plan approuvé : exécute-le. ». En lecture seule, un plan ne peut aboutir qu'à des recherches, une analyse, un document ou une image : s'il prévoit une commande ou la modification de fichiers, n'approuve pas et explique que le pont l'arrêterait. Sans plan en attente, `ok` fait partie de la question.
 - `stop` : arrête la demande en cours avec `cancel_gemini`.
 - `état` ou `modèles` : appelle `gemini_status` avec `test` = true et affiche le résultat (modèles disponibles, sessions récentes).
 - `image` : génère une image. Appelle `ask_gemini` avec « Génère une image : <description> ».
@@ -38,7 +38,7 @@ Puis, dans cet ordre :
 Exemples : `/gemini météo demain à Québec` (flash low) · `/gemini compare trois forfaits cellulaires au Québec` (flash medium) · `/gemini analyse ce rapport ~/Documents/bilan.pdf` (argon medium) · `/gemini flash high météo demain à Québec` (imposé) · `/gemini suite et pour lundi ?` · `/gemini image un phare rouge à l'aquarelle` · `/gemini argon low résume cette vidéo https://…` · `/gemini quelle heure est-il à Tokyo ?`
 
 Règles :
-- Fichiers : si la question contient des chemins de fichiers (images, PDF, texte), passe-les dans le paramètre `files` d'`ask_gemini` et retire-les de la question.
+- Fichiers : si la question contient des chemins de fichiers (images, PDF, texte, code source), passe-les dans le paramètre `files` d'`ask_gemini` et retire-les de la question.
 - YouTube, pour résumer ou analyser une vidéo : passe son adresse dans `youtube_url` d'`ask_gemini`, avec la question dans `prompt`. Gemini reçoit alors la transcription complète. Si l'utilisateur veut seulement la transcription, appelle `youtube_transcript` (`save_to` pour un fichier .txt).
 - Demande vide : appelle `gemini_status` et affiche son résultat.
 - Transmets la question de l'utilisateur telle quelle, complétée seulement du contexte utile (Gemini ne voit pas cette conversation).
@@ -48,7 +48,7 @@ Règles :
   - donne la réponse de Gemini telle quelle (texte, listes, sources et adresses), sans la réécrire ni l'enrichir de ton propre savoir ;
   - ajoute une ligne qui reprend du pied de réponse la démarche (recherches, pages lues), le modèle et la durée, avec le modèle et l'effort choisis et pourquoi, en quelques mots (ou « imposé ») ;
   - si Gemini a produit des images, montre-les et donne leur chemin ;
-  - si Gemini attend l'accord sur un plan, montre le plan et propose `/gemini ok`. Exception : si le plan fait exactement ce que l'utilisateur a demandé (par exemple générer l'image demandée), approuve-le tout de suite ;
+  - si Gemini attend l'accord sur un plan, montre le plan et propose `/gemini ok` (seulement s'il reste en lecture seule). Exception : si le plan fait exactement ce que l'utilisateur a demandé (par exemple générer l'image demandée), approuve-le tout de suite ;
   - dis quelles actions ont été refusées à Gemini, s'il y en a.
 - Si tu doutes d'un fait important, dis-le.
 - Si l'outil renvoie une erreur (connexion, délai, limite, demande arrêtée par le garde-fou), explique-la simplement et indique quoi faire.
@@ -56,12 +56,13 @@ Règles :
 
 """#
 
-    /// Empreintes SHA-256 des versions publiées (0.1 à 0.5) : seule une copie identique à l'une d'elles est remplacée.
+    /// Empreintes SHA-256 des versions publiées (0.1 à 0.6) : seule une copie identique à l'une d'elles est remplacée.
     public static let previousHashes: Set<String> = [
         "7ae2c4f8ba130e0a3fa3966428d98cbb345a92c985b34c9081d752b08448967b",
         "c63f284e08dc606fd1034d54003f9dfdcdf61e89ca8553ac016791d1d7168f0b",
         "ac2778f98c603724f9d1e282b2b28fa0ba5c97c3c0a495bc40db6aaac0f3ae3f",
         "8c9367500c19a8cbb7543b8b1f2fefb4a6922fd24b65eb8a30d9ac9ef54f1a1b",
         "d5b0d80e656559425ab3ce5eae9d9627d2ebb572c72c18b9a4c44233b883c730",
+        "8d84fdd60c0c0059de87fa3ca90f69e8abaf5405b6dd5f077ba9888f48c954d2",
     ]
 }

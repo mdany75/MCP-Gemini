@@ -88,24 +88,31 @@ public enum StreamEvent: Equatable {
                 guard let name = step["tool_name"]?.string ?? step["tool_info"]?["name"]?.string else { return nil }
                 let parameters = step["tool_info"]?["parameters"]
                 if name == "invoke_subagent" {
-                    // Même appel décrit comme un outil : son type est dans TypeName (ou Role).
-                    let type = parameters?["TypeName"]?.string ?? parameters?["Role"]?.string
-                    let activity = ActivityStep(tool: name, detail: type, failed: state == "ERROR")
-                    return .tool(activity, key: key, finished: state != "ACTIVE",
-                                 parameters: .object(["subagent_types": .array(type.map { [.string($0)] } ?? [])]))
+                    // Même appel décrit comme un outil : son type est dans TypeName ; Role n'est qu'un libellé libre.
+                    let type = parameters?["TypeName"]?.string
+                    let role = parameters?["Role"]?.string
+                    let activity = ActivityStep(tool: name, detail: type ?? role, failed: state == "ERROR")
+                    return .tool(activity, key: key, finished: state != "ACTIVE", parameters: .object([
+                        "subagent_types": .array(type.map { [.string($0)] } ?? []),
+                        "subagent_roles": .array(role.map { [.string($0)] } ?? []),
+                    ]))
                 }
                 let activity = ActivityStep(tool: name, detail: ActivityStep.detail(of: parameters), failed: state == "ERROR")
                 return .tool(activity, key: key, finished: state != "ACTIVE", parameters: parameters)
             case "subagent":
                 // Un sous-agent (ex. « image-generator ») : ses propres étapes n'apparaissent pas dans le flux.
-                // Selon les versions, il est décrit par son type ou seulement par son rôle (« Image Generator »).
-                let types = step["subagent_info"]?["subagents"]?.array?.compactMap {
-                    $0["type_name"]?.string ?? $0["typeName"]?.string ?? $0["role"]?.string
-                } ?? []
+                // Il est décrit par son type ou, selon les versions, seulement par son rôle (libellé libre, montré
+                // mais jamais pris pour le type : le garde-fou lit alors le type réel dans le dossier d'agy).
+                let subagents = step["subagent_info"]?["subagents"]?.array ?? []
+                let types = subagents.compactMap { $0["type_name"]?.string ?? $0["typeName"]?.string }
+                let roles = subagents.compactMap { $0["role"]?.string }
+                let shown = types.isEmpty ? roles : types
                 let activity = ActivityStep(tool: step["tool_name"]?.string ?? "invoke_subagent",
-                                            detail: types.isEmpty ? nil : types.joined(separator: ", "), failed: state == "ERROR")
-                return .tool(activity, key: key, finished: state != "ACTIVE",
-                             parameters: .object(["subagent_types": .array(types.map { .string($0) })]))
+                                            detail: shown.isEmpty ? nil : shown.joined(separator: ", "), failed: state == "ERROR")
+                return .tool(activity, key: key, finished: state != "ACTIVE", parameters: .object([
+                    "subagent_types": .array(types.map { .string($0) }),
+                    "subagent_roles": .array(roles.map { .string($0) }),
+                ]))
             case "agent_response":
                 guard let delta = step["text_delta"]?.string, !delta.isEmpty else { return nil }
                 return .text(delta)

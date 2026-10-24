@@ -33,7 +33,7 @@ Le pont ajoute donc trois protections :
   - recherche, lecture et attente ;
   - écriture seulement dans le dossier de la conversation ;
   - lecture seulement des fichiers joints à cette demande ;
-  - le seul sous-agent `image-generator` (reconnu par son type ou son rôle) ;
+  - le seul sous-agent `image-generator`, reconnu par son type. Le rôle est un libellé libre, jamais une preuve : un sous-agent annoncé sans type est vérifié dans le fichier qu'agy écrit pour lui (`.system_generated/subagents/<id>.json`, `subagentDescriptor.typeName`), à chaque événement et à la fin ;
   - `schedule` seulement pour attendre ce sous-agent : délai de 10 minutes au plus, sans autre paramètre.
 
 L'arrêt arrive au début d'une étape interdite : il limite les dégâts, il ne remplace pas le refus d'agy.
@@ -46,4 +46,5 @@ Une session du pont (6 caractères hexadécimaux) correspond à une conversation
 
 - Elle est gardée en mémoire et dans `sessions/<id>.json` (0600). Le nombre d'échanges est conservé, donc la limite tient après un redémarrage.
 - Si agy a perdu la conversation, la tentative est arrêtée dès l'événement `init`, puis relancée une fois avec l'historique rejoué.
+- Après un arrêt par le garde-fou, la session oublie sa conversation d'agy (qui contient l'action interdite) : la suite rejoue l'historique dans une nouvelle conversation.
 - Avec gemini-cli, l'historique est toujours rejoué : il ne reprend pas une session par identifiant.

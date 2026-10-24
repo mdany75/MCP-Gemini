@@ -154,6 +154,14 @@ public actor SessionStore {
         unlock(id)
     }
 
+    /// La conversation du programme n'est plus à reprendre (elle contient une action interdite) : la suite rejouera
+    /// l'historique gardé dans une nouvelle conversation. Les échanges déjà comptés le restent.
+    public func forgetConversation(id: String) {
+        guard sessions[id] != nil else { return }
+        sessions[id]!.conversationId = nil
+        persist(id)
+    }
+
     public func reset(id: String) -> Bool {
         let inMemory = sessions.removeValue(forKey: id) != nil
         unlock(id)

@@ -15,6 +15,8 @@ public struct BridgeReply: Equatable, Sendable {
     public var totalTokens: Int?
     /// Actions qu'agy a refusées faute de pouvoir demander l'accord (lecture seule, pas de terminal).
     public var deniedActions: [String] = []
+    /// Le garde-fou de lecture seule a arrêté agy : sa conversation contient une action interdite.
+    public var stoppedByGuard = false
 
     public init(response: String, conversationId: String? = nil, error: String? = nil) {
         self.response = response
@@ -127,6 +129,7 @@ public enum Backend {
 
         if let reason = result.stopReason {
             reply.error = reason
+            reply.stoppedByGuard = true
             if reply.response.isEmpty { reply.response = activity?.partialText ?? "" }
         } else if result.timedOut {
             let note = "délai de \(timeoutSeconds) s dépassé"

@@ -1,4 +1,6 @@
 import Foundation
+import ImageIO
+import PDFKit
 
 /// Fichiers joints à une demande : copiés dans le dossier de travail de Gemini (qui ne voit rien d'autre
 /// sur le Mac) pour qu'il les lise avec son outil de lecture, `view_file` (agy) ou `read_file` (gemini-cli),
@@ -7,9 +9,14 @@ import Foundation
 /// Les chemins viennent de Claude, donc potentiellement d'un contenu piégé : seuls des fichiers de
 /// documents et d'images sont acceptés, jamais de dossiers cachés ni de secrets (clés, trousseau, `.env`…).
 public enum Attachments {
-    public static let allowedExtensions: Set<String> = [
-        "png", "jpg", "jpeg", "gif", "webp", "heic", "pdf", "txt", "md", "csv", "tsv", "json", "log",
+    static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic"]
+    static let textExtensions: Set<String> = ["txt", "md", "csv", "tsv", "json", "log"]
+    /// Code source : du texte, contrôlé comme le texte (un fichier de configuration peut contenir une clé).
+    static let codeExtensions: Set<String> = [
+        "swift", "py", "js", "mjs", "ts", "tsx", "jsx", "java", "kt", "c", "h", "cpp", "hpp", "m", "mm", "cs", "go",
+        "rs", "rb", "php", "sh", "sql", "html", "css", "xml", "yaml", "yml", "toml", "r", "lua", "dart", "vue", "svelte",
     ]
+    public static let allowedExtensions: Set<String> = imageExtensions.union(textExtensions).union(codeExtensions).union(["pdf"])
     public static let maxFiles = 5
     public static let maxBytes = 20 * 1024 * 1024
     static let folderName = "attachments"
@@ -26,8 +33,11 @@ public enum Attachments {
         "backupcode", "codedesecours", "codesdesecours", "bitwarden", "1password", "keepass", "lastpass",
         "serviceaccount", "adminsdk",
     ]
-    /// Fichiers texte dont le début est lu pour y chercher une clé ou un jeton.
-    static let scannedExtensions: Set<String> = ["txt", "md", "csv", "tsv", "json", "log"]
+    /// Fichiers texte (et code) dont le début est lu pour y chercher une clé ou un jeton. Les PDF (texte et
+    /// métadonnées) et les images (métadonnées) sont contrôlés aussi, chacun à sa façon.
+    static let scannedExtensions: Set<String> = textExtensions.union(codeExtensions)
+    /// Pages d'un PDF lues au plus pour le contrôle (le début suffit à repérer un relevé ou une clé exportée).
+    static let scannedPDFPages = 50
     static let scannedBytes = 256 * 1024
     /// Clé privée PEM, compte de service Google, clés AWS, GitHub, Slack, Anthropic et Google.
     static let secretPattern = try! NSRegularExpression(pattern: [
@@ -167,7 +177,10 @@ public enum Attachments {
         guard FileManager.default.isReadableFile(atPath: url.path) else {
             throw BridgeError.invalid("Fichier joint « \(raw) » illisible (autorisation).")
         }
-        if scannedExtensions.contains(ext), containsSecret(url) {
+        if ext == "pdf", let document = PDFDocument(url: url), document.isLocked {
+            throw BridgeError.invalid("Fichier joint « \(raw) » refusé : PDF protégé par un mot de passe, son contenu ne peut pas être vérifié.")
+        }
+        if containsSecret(url, ext: ext) {
             throw BridgeError.invalid("Fichier joint « \(raw) » refusé : il semble contenir une clé ou un jeton d'accès "
                                       + "(clé privée, compte de service, clé d'API…) ; il n'est pas envoyé à Gemini.")
         }
@@ -197,12 +210,45 @@ public enum Attachments {
     }
 
     /// Le début d'un fichier texte contient-il une clé ou un jeton reconnaissable ?
-    static func containsSecret(_ url: URL) -> Bool {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
-        defer { try? handle.close() }
-        guard let data = try? handle.read(upToCount: scannedBytes), !data.isEmpty else { return false }
-        let text = String(decoding: data, as: UTF8.self)
-        return secretPattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    static func containsSecret(_ url: URL, ext: String) -> Bool {
+        let text: String
+        if scannedExtensions.contains(ext) {
+            guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+            defer { try? handle.close() }
+            guard let data = try? handle.read(upToCount: scannedBytes), !data.isEmpty else { return false }
+            text = String(decoding: data, as: UTF8.self)
+        } else if ext == "pdf" {
+            text = pdfText(url)
+        } else if imageExtensions.contains(ext) {
+            text = imageMetadataText(url)
+        } else {
+            return false
+        }
+        return !text.isEmpty && secretPattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    /// Métadonnées (titre, auteur, sujet, mots-clés…) puis texte des premières pages d'un PDF, 256 Ko au plus.
+    static func pdfText(_ url: URL) -> String {
+        guard let document = PDFDocument(url: url) else { return "" }
+        var text = (document.documentAttributes ?? [:]).values.compactMap { $0 as? String }.joined(separator: "\n")
+        for index in 0..<min(document.pageCount, scannedPDFPages) where text.utf8.count < scannedBytes {
+            if let page = document.page(at: index)?.string { text += "\n" + page }
+        }
+        return text
+    }
+
+    /// Textes rangés dans les métadonnées d'une image (EXIF, IPTC, TIFF, PNG… : description, commentaire, auteur).
+    static func imageMetadataText(_ url: URL) -> String {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any] else { return "" }
+        var strings: [String] = []
+        func collect(_ value: Any) {
+            if let text = value as? String { strings.append(text) }
+            else if let dictionary = value as? [String: Any] { dictionary.values.forEach(collect) }
+            else if let array = value as? [Any] { array.forEach(collect) }
+        }
+        collect(properties)
+        return String(strings.joined(separator: "\n").prefix(scannedBytes))
     }
 
     /// Nom sûr : l'extension (déjà contrôlée) est conservée même si le nom est tronqué.
