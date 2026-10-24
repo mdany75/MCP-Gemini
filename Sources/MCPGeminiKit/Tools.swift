@@ -23,11 +23,14 @@ public final class ToolHandler: Sendable {
     private let environment: [String: String]
     private let home: String
     private let jobs = JobBoard()
+    private let fetch: @Sendable (URL) async throws -> Data
 
     public init(settings: Settings, store: SessionStore,
                 workspace: URL = Settings.workspaceURL(),
                 environment: [String: String] = Locator.environment(),
-                home: String = NSHomeDirectory()) {
+                home: String = NSHomeDirectory(),
+                fetch: @escaping @Sendable (URL) async throws -> Data = ToolHandler.fetchCaptions) {
+        self.fetch = fetch
         self.settings = settings
         self.store = store
         self.workspace = workspace
@@ -56,12 +59,34 @@ public final class ToolHandler: Sendable {
                     "properties": [
                         "prompt": ["type": "string", "description": "La demande, complète et autonome."],
                         "session_id": ["type": "string", "description": "Identifiant renvoyé par un appel précédent, pour poursuivre la même conversation. Omettre pour en ouvrir une nouvelle."],
+                        "files": ["type": "array", "items": ["type": "string"], "description": "Fichiers à joindre (chemins complets, 5 au plus, 20 Mo chacun) : images (png, jpg, gif, webp, heic), PDF, texte (txt, md, csv, tsv, json, log). Gemini les lit ; leur contenu est envoyé à Google. Fichiers cachés et dossiers sensibles refusés."],
                         "model": ["type": "string", "description": "Modèle (facultatif ; par défaut celui des réglages) : nom court argon, flash, opus, sonnet, gpt, ou identifiant complet de `agy models`."],
                         "effort": ["type": "string", "description": "Effort de réflexion (facultatif ; par défaut celui des réglages) : low, medium ou high. Avec un nom court de modèle, choisit la variante (flash + high = gemini-3.8-flash-high)."],
                     ],
                     "required": ["prompt"],
                 ],
                 "annotations": ["title": "Demander à Gemini", "readOnlyHint": true, "openWorldHint": true],
+            ],
+            [
+                "name": "youtube_transcript",
+                "title": "Transcription d'une vidéo YouTube",
+                "description": """
+                Récupère les sous-titres d'une vidéo YouTube (adresse https youtube.com ou youtu.be) avec yt-dlp et les renvoie en texte, \
+                avec titre, chaîne, durée et repères de temps. Ce sont les sous-titres publiés ou, à défaut, les sous-titres automatiques de YouTube : \
+                pas une transcription audio. Aucune vidéo n'est téléchargée. Pour résumer ou analyser la vidéo, donner ensuite ce texte à `ask_gemini` \
+                (ou le résumer soi-même). `save_to` enregistre aussi le texte complet dans un fichier .txt du dossier personnel.
+                """,
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "url": ["type": "string", "description": "Adresse de la vidéo YouTube."],
+                        "language": ["type": "string", "description": "Langue des sous-titres (code : en, fr…). Par défaut, la langue d'origine de la vidéo."],
+                        "timestamps": ["type": "boolean", "description": "Repères [mm:ss] toutes les 30 s (défaut : oui)."],
+                        "save_to": ["type": "string", "description": "Chemin complet d'un nouveau fichier .txt à créer, dans le dossier personnel (rien n'est écrasé)."],
+                    ],
+                    "required": ["url"],
+                ],
+                "annotations": ["title": "Transcription d'une vidéo YouTube", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": true],
             ],
             [
                 "name": "gemini_result",
@@ -106,6 +131,7 @@ public final class ToolHandler: Sendable {
         switch name {
         case "ask_gemini": return await askGemini(arguments)
         case "gemini_result": return await geminiResult(arguments)
+        case "youtube_transcript": return await youtubeTranscript(arguments)
         case "gemini_status": return await status(test: arguments["test"]?.bool ?? false)
         case "reset_gemini_session": return await reset(arguments)
         default: return .fail("Outil inconnu : \(name)")
@@ -159,6 +185,24 @@ public final class ToolHandler: Sendable {
             model: askedModel ?? settings.model,
             effort: requestedEffort ?? settings.effort)
 
+        // Les fichiers joints sont vérifiés avant d'ouvrir l'échange : un refus ne consomme rien.
+        var attached: Attachments.Prepared?
+        if let files = arguments["files"] {
+            guard let list = files.array, list.allSatisfy({ $0.string != nil }) else {
+                return .fail("Le paramètre « files » doit être une liste de chemins.")
+            }
+            do {
+                try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+                Attachments.purgeStale(workspace: workspace)
+                let prepared = try Attachments.prepare(paths: list.compactMap(\.string), workspace: workspace, home: home,
+                                                       id: String(UUID().uuidString.prefix(8)).lowercased())
+                if !prepared.relativePaths.isEmpty { attached = prepared }
+            } catch {
+                return .fail(error.localizedDescription)
+            }
+        }
+        defer { if let attached { Attachments.remove(attached) } }
+
         let session: SessionSnapshot
         do {
             session = try await store.begin(sessionId: arguments["session_id"]?.string)
@@ -166,7 +210,7 @@ public final class ToolHandler: Sendable {
             return .fail(error.localizedDescription)
         }
 
-        let fullPrompt = composePrompt(prompt, session: session)
+        let fullPrompt = composePrompt(prompt, session: session) + Attachments.promptNote(attached?.relativePaths ?? [])
         let reply: BridgeReply
         do {
             reply = try await execute(kind: kind, executable: executable, prompt: fullPrompt, model: model, effort: effort,
@@ -290,6 +334,96 @@ public final class ToolHandler: Sendable {
             return .fail("Le paramètre « session_id » est obligatoire.")
         }
         return await store.reset(id: id) ? .ok("Session \(id) effacée.") : .fail(SessionError.unknown(id: id).localizedDescription)
+    }
+
+    // MARK: - Transcription YouTube
+
+    private func youtubeTranscript(_ arguments: [String: JSONValue]) async -> ToolResult {
+        guard let raw = arguments["url"]?.string, let url = YouTubeTranscript.validate(raw) else {
+            return .fail("« url » doit être une adresse https de vidéo YouTube (youtube.com ou youtu.be).")
+        }
+        let language = arguments["language"]?.string.flatMap { $0.isEmpty ? nil : $0 }
+        let timestamps = arguments["timestamps"]?.bool ?? true
+        var savePath: URL?
+        if let target = arguments["save_to"]?.string, !target.isEmpty {
+            do { savePath = try YouTubeTranscript.validateSavePath(target, home: home) } catch { return .fail(error.localizedDescription) }
+        }
+        guard let ytDlp = Locator.tool(named: "yt-dlp", override: settings.ytDlp, home: home) else {
+            return .fail("yt-dlp est introuvable. L'installer : brew install yt-dlp (ou indiquer son chemin dans le réglage « ytDlp »).")
+        }
+
+        let info: ProcessResult
+        do {
+            info = try await ProcessRunner.run(
+                executable: ytDlp,
+                arguments: ["--skip-download", "--dump-single-json", "--no-warnings", "--no-playlist", "--", url],
+                environment: environment, workingDirectory: FileManager.default.temporaryDirectory, timeout: 45)
+        } catch is CancellationError {
+            return .fail("Appel annulé.")
+        } catch {
+            return .fail(error.localizedDescription)
+        }
+        if info.timedOut { return .fail("yt-dlp a dépassé 45 s : réessayer (YouTube est peut-être lent ou bloque la requête).") }
+        guard info.exitCode == 0, let json = Backend.extractJSON(info.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            let detail = info.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .fail("yt-dlp n'a pas pu lire la vidéo (privée, supprimée, restreinte ou adresse erronée ?)" + (detail.isEmpty ? "" : " : \(String(detail.suffix(300)))"))
+        }
+
+        let title = json["title"]?.string ?? "(sans titre)"
+        let channel = json["channel"]?.string ?? json["uploader"]?.string ?? "(inconnue)"
+        let duration = YouTubeTranscript.durationText(json["duration"]?.double) ?? "inconnue"
+        guard let track = YouTubeTranscript.pickTrack(json: json, language: language) else {
+            let available = ((json["subtitles"]?.object ?? [:]).keys.sorted() + (json["automatic_captions"]?.object ?? [:]).keys.sorted().prefix(8)).joined(separator: ", ")
+            return .fail("Aucun sous-titre\(language.map { " « \($0) »" } ?? "") pour la vidéo « \(title) » (\(channel)). Pistes vues : \(available.isEmpty ? "aucune" : available).")
+        }
+        guard let trackURL = URL(string: track.url) else { return .fail("Adresse de sous-titres invalide.") }
+
+        let vtt: String
+        do {
+            vtt = String(decoding: try await fetch(trackURL), as: UTF8.self)
+        } catch is CancellationError {
+            return .fail("Appel annulé.")
+        } catch {
+            return .fail("Téléchargement des sous-titres impossible : \(error.localizedDescription)")
+        }
+        let body = YouTubeTranscript.format(YouTubeTranscript.parseVTT(vtt, deduplicate: track.isAutomatic), timestamps: timestamps)
+        guard !body.isEmpty else { return .fail("Les sous-titres de la vidéo « \(title) » sont vides.") }
+
+        let kind = track.isAutomatic ? "sous-titres automatiques de YouTube, non relus" : "sous-titres publiés"
+        let header = "Titre : \(title)\nChaîne : \(channel)\nDurée : \(duration)\nSource : \(url)\nLangue : \(track.language) (\(kind))\n\n"
+        var saved = ""
+        if let savePath {
+            do {
+                // Contrôle refait au moment d'écrire (le dossier ou le fichier ont pu changer pendant l'attente),
+                // puis création exclusive : jamais d'écrasement, jamais de lien symbolique suivi.
+                let target = try YouTubeTranscript.validateSavePath(savePath.path, home: home)
+                try YouTubeTranscript.writeExclusively((header + body + "\n").data(using: .utf8) ?? Data(), to: target)
+                saved = "\n\n[Enregistré dans \(target.path)]"
+            } catch {
+                saved = "\n\n[Enregistrement impossible : \(error.localizedDescription)]"
+            }
+        }
+        var text = header + body
+        if text.count > Self.maxResponseCharacters {
+            text = String(text.prefix(Self.maxResponseCharacters))
+                + "\n\n[texte tronqué à \(Self.maxResponseCharacters) caractères" + (savePath == nil ? " ; utiliser save_to pour garder la transcription complète" : "") + "]"
+        }
+        return .ok(text + saved)
+    }
+
+    /// Téléchargement d'une piste de sous-titres : https, domaine YouTube seulement, 5 Mo au plus.
+    @Sendable public static func fetchCaptions(_ url: URL) async throws -> Data {
+        guard url.scheme == "https", let host = url.host?.lowercased(), host == "youtube.com" || host.hasSuffix(".youtube.com") else {
+            throw BridgeError.invalid("adresse de sous-titres hors YouTube refusée")
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw BridgeError.invalid("réponse HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+        }
+        guard data.count <= 5 * 1024 * 1024 else { throw BridgeError.invalid("sous-titres trop volumineux") }
+        return data
     }
 
     static func missingMessage(_ kind: BackendKind, override: String?) -> String {

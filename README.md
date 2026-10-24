@@ -5,6 +5,8 @@ Pont local entre Claude et Gemini : un serveur MCP natif (Swift, sans API payant
 ## Fonctions
 
 - `ask_gemini` : Claude envoie une demande à Gemini (recherche web ou Google Maps en temps réel, analyse d'une chaîne ou d'une vidéo YouTube, très gros volumes de texte) et reçoit la réponse brute.
+- Fichiers joints : `ask_gemini` accepte `files` (5 au plus, 20 Mo chacun) : images (png, jpg, gif, webp, heic), PDF et texte (txt, md, csv, tsv, json, log). Gemini les lit dans son dossier de travail ; les copies sont effacées après la demande. Seuls les dossiers Bureau, Documents, Téléchargements et Images sont acceptés (jamais de fichier caché ni de nom évoquant un secret). Leur contenu est envoyé à Google.
+- `youtube_transcript` : récupère les sous-titres d'une vidéo YouTube avec `yt-dlp` (publiés, sinon automatiques), avec titre, chaîne, durée et repères de temps ; `save_to` enregistre un fichier .txt. Aucune vidéo n'est téléchargée. Pour résumer ou analyser, Claude donne ensuite ce texte à Gemini.
 - Conversations suivies : chaque réponse porte un `session_id` ; Claude le repasse pour une question de suivi et Gemini se souvient de l'échange.
 - Garde-fou contre les boucles : 5 échanges au plus par session et 30 appels par 10 minutes (réglables) ; au-delà, Claude doit conclure avec ce qu'il a.
 - Aucun blocage : les appels longs tournent en arrière-plan, avec signes de vie réguliers et annulation prise en charge.
@@ -17,7 +19,7 @@ Pont local entre Claude et Gemini : un serveur MCP natif (Swift, sans API payant
 
 ## Installer
 
-Configuration requise : macOS 14 ou plus, Xcode (pour compiler), un compte Google.
+Configuration requise : macOS 14 ou plus, Xcode (pour compiler), un compte Google, et `yt-dlp` pour les transcriptions YouTube (`brew install yt-dlp`).
 
 1. Installer Antigravity CLI et s'y connecter une fois :
    ```bash
@@ -45,6 +47,7 @@ Fichier `~/Library/Application Support/MCP Gemini/settings.json` (tous les champ
 | --- | --- | --- |
 | `backend` | `agy` | `agy` ou `gemini` |
 | `executable` | recherche auto | chemin complet du programme |
+| `ytDlp` | recherche auto | chemin complet de `yt-dlp` |
 | `model` | celui du programme | voir `agy models` |
 | `mode` | `plan` | `plan` (lecture seule), `accept-edits`, `auto` |
 | `effort` | celui du programme | `low`, `medium`, `high` |
@@ -56,7 +59,7 @@ Fichier `~/Library/Application Support/MCP Gemini/settings.json` (tous les champ
 
 ## Reconstruire
 
-Outils : Xcode (Swift 6). `swift build -c release` produit `.build/release/mcp-gemini`. `swift test` lance les 69 tests, qui utilisent un faux programme et n'appellent jamais Gemini.
+Outils : Xcode (Swift 6). `swift build -c release` produit `.build/release/mcp-gemini`. `swift test` lance les 90 tests, qui utilisent un faux programme et n'appellent jamais Gemini.
 
 ## Organisation
 

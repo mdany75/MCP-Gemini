@@ -211,7 +211,7 @@ final class ToolHandlerTests: XCTestCase {
     func testToolDefinitionsAreWellFormed() throws {
         let handler = try FakeAgent(body: "true").handler()
         let names = handler.definitions.compactMap { $0["name"]?.string }
-        XCTAssertEqual(names, ["ask_gemini", "gemini_result", "gemini_status", "reset_gemini_session"])
+        XCTAssertEqual(names, ["ask_gemini", "youtube_transcript", "gemini_result", "gemini_status", "reset_gemini_session"])
         for definition in handler.definitions {
             XCTAssertEqual(definition["inputSchema"]?["type"]?.string, "object")
             XCTAssertNotNil(definition["description"]?.string)

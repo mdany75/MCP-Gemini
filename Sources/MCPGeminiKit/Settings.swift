@@ -15,6 +15,8 @@ public struct Settings: Codable, Equatable, Sendable {
     public var backend: BackendKind = .agy
     /// Chemin complet du programme ; `nil` = recherche automatique.
     public var executable: String?
+    /// Chemin complet de `yt-dlp` (transcriptions YouTube) ; `nil` = recherche automatique.
+    public var ytDlp: String?
     /// Modèle imposé (voir `agy models`) ; `nil` = celui du programme.
     public var model: String?
     /// Mode d'exécution d'agy : `plan` (lecture seule), `accept-edits` ou `auto`.
@@ -47,6 +49,7 @@ public struct Settings: Codable, Equatable, Sendable {
         let d = Settings()
         backend = (try? c.decodeIfPresent(BackendKind.self, forKey: .backend)) ?? d.backend
         executable = (try? c.decodeIfPresent(String.self, forKey: .executable)) ?? nil
+        ytDlp = (try? c.decodeIfPresent(String.self, forKey: .ytDlp)) ?? nil
         model = (try? c.decodeIfPresent(String.self, forKey: .model)) ?? nil
         mode = (try? c.decodeIfPresent(String.self, forKey: .mode)) ?? d.mode
         effort = (try? c.decodeIfPresent(String.self, forKey: .effort)) ?? nil

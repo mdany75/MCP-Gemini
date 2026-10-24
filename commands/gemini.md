@@ -1,7 +1,7 @@
 ---
 description: Demander quelque chose à Gemini (modèle et effort facultatifs) par le connecteur MCP-Gemini
 argument-hint: [modèle] [effort] <question>   (modèles : argon, flash, opus, sonnet, gpt — efforts : low, medium, high)
-allowed-tools: mcp__gemini__ask_gemini, mcp__gemini__gemini_result, mcp__gemini__gemini_status, mcp__gemini__reset_gemini_session
+allowed-tools: mcp__gemini__ask_gemini, mcp__gemini__youtube_transcript, mcp__gemini__gemini_result, mcp__gemini__gemini_status, mcp__gemini__reset_gemini_session
 ---
 
 Délègue la demande suivante à Gemini avec l'outil `ask_gemini` du serveur MCP « gemini » :
@@ -16,6 +16,8 @@ Lecture des arguments, dans cet ordre :
 Exemples : `/gemini flash high météo demain à Québec` · `/gemini argon low résume cette vidéo https://…` · `/gemini high compare ces deux options` · `/gemini quelle heure est-il à Tokyo ?`
 
 Règles :
+- Si la question contient des chemins de fichiers (images, PDF, texte), passe-les dans le paramètre `files` d'`ask_gemini` et retire-les de la question.
+- Si la question contient une adresse de vidéo YouTube et demande un résumé ou une analyse, appelle d'abord `youtube_transcript`, puis donne le texte obtenu à `ask_gemini` avec la question (Gemini ne peut pas lire une vidéo YouTube directement). Si l'utilisateur veut seulement la transcription, `youtube_transcript` suffit (`save_to` pour un fichier .txt).
 - Si la demande est vide, appelle `gemini_status` et affiche son résultat.
 - Transmets la question de l'utilisateur telle quelle, complétée seulement du contexte utile (Gemini ne voit pas cette conversation).
 - Si l'utilisateur pose une question de suivi sur le même sujet, repasse le `session_id` reçu ; s'il change de sujet, ouvre une nouvelle session.

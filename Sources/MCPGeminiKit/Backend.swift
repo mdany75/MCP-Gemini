@@ -182,6 +182,23 @@ public enum Locator {
         return nil
     }
 
+    /// N'importe quel outil en ligne de commande (ex. `yt-dlp`) : réglage explicite, sinon dossiers usuels et PATH.
+    public static func tool(named name: String, override: String?,
+                            home: String = NSHomeDirectory(),
+                            inheritedPath: String = ProcessInfo.processInfo.environment["PATH"] ?? "",
+                            fileExists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }) -> String? {
+        if let override, !override.isEmpty {
+            let expanded = (override as NSString).expandingTildeInPath
+            return fileExists(expanded) ? expanded : nil
+        }
+        let extra = inheritedPath.split(separator: ":").map(String.init)
+        for directory in searchDirectories(home: home) + extra {
+            let path = "\(directory)/\(name)"
+            if fileExists(path) { return path }
+        }
+        return nil
+    }
+
     /// Environnement hérité, avec un PATH complet (gemini-cli est un script `#!/usr/bin/env node`).
     public static func environment(inherited: [String: String] = ProcessInfo.processInfo.environment,
                                    home: String = NSHomeDirectory()) -> [String: String] {

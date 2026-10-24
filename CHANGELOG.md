@@ -1,5 +1,10 @@
 # Journal des versions
 
+## 0.4 — 2026-10-24
+
+- Fichiers joints : `ask_gemini` accepte `files` (images, PDF, texte) ; liste blanche de dossiers (Bureau, Documents, Téléchargements, Images), noms sensibles et fichiers cachés refusés, copies temporaires effacées.
+- Nouvel outil `youtube_transcript` : sous-titres d'une vidéo YouTube avec repères de temps, enregistrables dans un fichier .txt (`save_to`).
+
 ## 0.3 — 2026-10-23
 
 - `/gemini [modèle] [effort] question` : choix du modèle (`argon`, `flash`, `opus`, `sonnet`, `gpt` ou identifiant complet) et de l'effort (`low`, `medium`, `high`) ; sans eux, les valeurs par défaut des réglages. `ask_gemini` accepte les paramètres `model` et `effort`.

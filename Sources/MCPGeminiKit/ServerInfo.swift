@@ -2,7 +2,7 @@ import Foundation
 
 public enum ServerInfo {
     public static let name = "mcp-gemini"
-    public static let version = "0.3"
+    public static let version = "0.4"
 
     public static func instructions(settings: Settings) -> String {
         """
