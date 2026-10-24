@@ -1,5 +1,10 @@
 # Journal des versions
 
+## 0.6 — 2026-10-24
+
+- Choix automatique du modèle et de l'effort : avec `/gemini <question>`, Claude analyse la question et passe toujours `model` et `effort` (flash + low pour un fait simple, flash + medium pour une petite synthèse, argon + medium pour une recherche approfondie ou un long document, argon + high pour un raisonnement difficile). Plus de valeurs par défaut du serveur ; un modèle ou un effort tapé par l'utilisateur l'emporte toujours.
+- Même règle dans les instructions du serveur et la description d'`ask_gemini`, pour Claude Desktop.
+
 ## 0.5 — 2026-10-24
 
 Travailler avec Gemini depuis Claude comme dans agy.

@@ -171,8 +171,8 @@ public final class ToolHandler: @unchecked Sendable {
                         "files": ["type": "array", "maxItems": .number(Double(Attachments.maxFiles)), "items": ["type": "string"], "description": "Fichiers à joindre (chemins complets, 5 au plus, 20 Mo chacun) : images (png, jpg, gif, webp, heic), PDF, texte (txt, md, csv, tsv, json, log), dans Bureau, Documents, Téléchargements ou Images. Gemini les lit ; leur contenu est envoyé à Google et reste dans l'historique local d'agy. Effacés après chaque demande : les repasser pour une question de suivi."],
                         "youtube_url": ["type": "string", "description": "Adresse d'une vidéo YouTube à analyser : le pont récupère ses sous-titres complets (yt-dlp) et les joint comme fichier ; la question va dans prompt. Accepte aussi `language` (code des sous-titres)."],
                         "language": ["type": "string", "description": "Avec youtube_url : langue des sous-titres (en, fr…). Par défaut, la langue d'origine de la vidéo."],
-                        "model": ["type": "string", "description": .string("Modèle (facultatif ; par défaut \(Self.defaultModelText(settings))) : flash (rapide), argon (plus puissant, plus lent), ou par Antigravity des modèles non Google : opus, sonnet, gpt (medium seulement) ; ou identifiant complet de `agy models`.")],
-                        "effort": ["type": "string", "enum": .array(ModelCatalog.efforts.map { .string($0) }), "description": "Effort de réflexion (facultatif ; par défaut celui des réglages) : low, medium ou high (xhigh et max : seulement pour les modèles qui les ont). Avec un nom court de modèle, choisit la variante (flash + high = gemini-3.8-flash-high)."],
+                        "model": ["type": "string", "description": .string("Modèle, à choisir d'après la demande (\(Self.choiceGuide)) ; si l'utilisateur en nomme un, le sien. Par Antigravity, des modèles non Google : opus, sonnet, gpt (medium seulement), seulement si l'utilisateur les demande ; ou identifiant complet de `agy models`. Sans model, le serveur prend \(Self.defaultModelText(settings)).")],
+                        "effort": ["type": "string", "enum": .array(ModelCatalog.efforts.map { .string($0) }), "description": .string("Effort de réflexion, à choisir avec le modèle (\(Self.choiceGuide)) : low, medium ou high (xhigh et max : seulement pour les modèles qui les ont). Avec un nom court de modèle, choisit la variante (flash + high = gemini-3.8-flash-high).")],
                     ],
                     "required": ["prompt"],
                 ],
@@ -251,6 +251,11 @@ public final class ToolHandler: @unchecked Sendable {
             ],
         ]
     }
+
+    /// Choix du modèle et de l'effort d'après la demande (le même guide que la commande `/gemini`).
+    static let choiceGuide = "flash + low : un fait simple en une recherche ; flash + medium : quelques recherches, petite synthèse, "
+        + "lecture d'une image ; argon + medium : recherche approfondie, long document ou longue vidéo, comparaison nuancée ; "
+        + "argon + high : raisonnement difficile ou exactitude importante ; image : flash + low ; en cas de doute, le niveau supérieur"
 
     static func defaultModelText(_ settings: Settings) -> String {
         guard let choice = try? ModelCatalog.choose(kind: settings.backend, model: nil, effort: nil, settings: settings),

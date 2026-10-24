@@ -2,7 +2,7 @@ import Foundation
 
 public enum ServerInfo {
     public static let name = "mcp-gemini"
-    public static let version = "0.5"
+    public static let version = "0.6"
 
     public static func instructions(settings: Settings) -> String {
         """
@@ -11,8 +11,9 @@ public enum ServerInfo {
         longs textes), génération d'images (renvoyées en image), très gros volumes de texte. Vidéo YouTube : `ask_gemini` \
         avec `youtube_url` (Gemini reçoit la transcription complète) ; `youtube_transcript` seulement pour le texte \
         lui-même ; Gemini ne lit pas une vidéo par son adresse dans la demande. \
-        Appelle `ask_gemini` avec une demande complète et autonome (Gemini ne voit pas cette conversation). Modèle par \
-        défaut : \(ToolHandler.defaultModelText(settings)) (`model` : flash rapide, argon plus puissant). Garde le \
+        Appelle `ask_gemini` avec une demande complète et autonome (Gemini ne voit pas cette conversation), et choisis \
+        toujours `model` et `effort` d'après la demande (\(ToolHandler.choiceGuide)) ; si l'utilisateur en impose, les \
+        siens. Garde le \
         `session_id` renvoyé pour une question de suivi ; au plus \(settings.effectiveMaxTurns) échanges par session : \
         ensuite, rédige la réponse finale avec ce que tu as. session_id = "last" reprend la session la plus récente, même \
         après un redémarrage. Si Gemini attend l'accord sur un plan, montre-le à l'utilisateur et, avec son accord (sa \

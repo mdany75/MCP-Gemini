@@ -337,6 +337,11 @@ final class StreamAndGuardTests: XCTestCase {
         XCTAssertNotNil(ask["inputSchema"]?["properties"]?["youtube_url"])
         XCTAssertFalse(ask["description"]?.string?.contains("analyse d'une chaîne ou d'une vidéo YouTube") ?? true)
         XCTAssertFalse(instructions.contains("Google Maps"))
+        // Le modèle et l'effort se choisissent d'après la demande, partout (serveur et commande /gemini).
+        XCTAssertTrue(instructions.contains(ToolHandler.choiceGuide))
+        XCTAssertTrue(ask["inputSchema"]?["properties"]?["model"]?["description"]?.string?.contains(ToolHandler.choiceGuide) ?? false)
+        XCTAssertTrue(GeminiCommand.text.contains("Passe toujours `model` et `effort`"))
+        XCTAssertFalse(GeminiCommand.text.contains("le serveur applique ses valeurs par défaut"))
     }
 
     func testScheduleIsOnlyAllowedToWaitForTheImageSubagent() {

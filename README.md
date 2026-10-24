@@ -25,7 +25,8 @@ Pont local entre Claude et Gemini : un serveur MCP natif (Swift, sans API payant
   - un outil interdit démarre (commande, écriture hors du dossier de la conversation, sous-agent autre que celui des images) ;
   - Gemini veut lire un fichier qui n'a pas été joint, ou ouvrir une adresse qui n'est pas une adresse web.
 - Commande `/gemini` dans Claude Code (installée par `--install`) :
-  - `/gemini flash high météo demain à Québec` choisit le modèle (`argon`, `flash`, `opus`, `sonnet`, `gpt`) et l'effort (`low`, `medium`, `high`) ;
+  - `/gemini météo demain à Québec` : Claude choisit lui-même le modèle et l'effort d'après la question (flash + low pour un fait simple, jusqu'à argon + high pour un raisonnement difficile) et dit pourquoi ;
+  - `/gemini flash high météo demain à Québec` impose le modèle (`argon`, `flash`, `opus`, `sonnet`, `gpt`) et l'effort (`low`, `medium`, `high`) ;
   - `/gemini suite …` pose une question de suivi, `/gemini nouveau …` ouvre une nouvelle conversation ;
   - `/gemini ok` approuve un plan, `/gemini stop` arrête une demande ;
   - `/gemini image …` génère une image, `/gemini état` montre l'état et les modèles disponibles.
@@ -63,8 +64,8 @@ Fichier `~/Library/Application Support/MCP Gemini/settings.json` (tous les champ
 | `backend` | `agy` | `agy` ou `gemini` |
 | `executable` | recherche auto | chemin complet du programme |
 | `ytDlp` | recherche auto | chemin complet de `yt-dlp` |
-| `model` | celui du programme | nom court (`flash`, `argon`…) ou identifiant de `agy models` |
-| `effort` | celui du programme | `low`, `medium`, `high` (`xhigh`, `max` pour les modèles qui les ont) |
+| `model` | celui du programme | nom court (`flash`, `argon`…) ou identifiant de `agy models` ; seulement si Claude n'en choisit pas (il le fait d'après la demande) |
+| `effort` | celui du programme | `low`, `medium`, `high` (`xhigh`, `max` pour les modèles qui les ont) ; même remarque |
 | `mode` | `plan` | imposé : toute autre valeur est ignorée (lecture seule) |
 | `waitSeconds` | 40 | attente par appel avant de rendre un `job_id` (au plus 50 ; Claude Code attend la réponse) |
 | `timeoutSeconds` | 240 | durée maximale d'une demande (10 à 1800) |
