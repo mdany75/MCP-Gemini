@@ -341,6 +341,10 @@ final class StreamAndGuardTests: XCTestCase {
         XCTAssertTrue(instructions.contains(ToolHandler.choiceGuide))
         XCTAssertTrue(ask["inputSchema"]?["properties"]?["model"]?["description"]?.string?.contains(ToolHandler.choiceGuide) ?? false)
         XCTAssertTrue(GeminiCommand.text.contains("Passe toujours `model` et `effort`"))
+        // Claude consulte Gemini de lui-même dans les cas utiles, et le dit : même règle partout.
+        XCTAssertTrue(instructions.contains(ServerInfo.whenToConsult))
+        XCTAssertTrue(ask["description"]?.string?.contains(ServerInfo.whenToConsult) ?? false)
+        XCTAssertTrue(ServerInfo.whenToConsult.contains("sans attendre qu'on te le demande"))
         XCTAssertFalse(GeminiCommand.text.contains("le serveur applique ses valeurs par défaut"))
     }
 

@@ -160,9 +160,8 @@ public final class ToolHandler: @unchecked Sendable {
                 "description": .string("""
                 Délègue une demande à Gemini (Google) via la ligne de commande locale (agy), en lecture seule, puis renvoie sa \
                 réponse brute, avec un pied qui dit ce qu'il a fait (recherches, pages lues), le modèle, la durée et les jetons. \
-                À utiliser pour ce que Gemini fait bien : recherche Google en temps réel (actualité, prix, horaires, lieux) avec \
-                sources, analyse de fichiers joints (`files` : images, PDF, longs textes), génération d'images (renvoyées en image), \
-                très gros volumes de texte. Vidéo YouTube : passer son adresse dans `youtube_url` (Gemini reçoit alors la \
+                \(ServerInfo.whenToConsult) Capacités : recherche Google en temps réel avec sources, analyse de fichiers \
+                joints (`files` : images, PDF, texte, code), génération d'images (renvoyées en image), très gros volumes de texte. Vidéo YouTube : passer son adresse dans `youtube_url` (Gemini reçoit alors la \
                 transcription complète) ; ne jamais mettre l'adresse seule dans prompt, Gemini ne lit pas une vidéo par son adresse. \
                 Gemini ne voit PAS cette conversation : la demande doit être complète et autonome. Renvoie un `session_id` à \
                 repasser pour une question de suivi (limite de \(settings.effectiveMaxTurns) échanges par session ; \

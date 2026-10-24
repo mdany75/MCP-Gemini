@@ -5,6 +5,7 @@ Pont local entre Claude et Gemini : un serveur MCP natif (Swift, sans API payant
 ## Fonctions
 
 - `ask_gemini` : Claude envoie une demande à Gemini (recherche Google en temps réel avec sources, analyse de fichiers, génération d'images, très gros volumes de texte) et reçoit sa réponse brute.
+- Claude consulte Gemini de lui-même, sans qu'on le lui demande, quand Gemini apporte ce qu'il n'a pas : générer une image, analyser une vidéo YouTube, une information locale ou récente (actualité, prix, horaires, météo), un deuxième avis sur un fait important (santé, argent, droit), un document trop long. Il le dit chaque fois, avec la raison. Pour le raisonnement, le code et la rédaction, il répond seul.
 - Comme dans agy, on voit ce que fait Gemini :
   - pendant la demande, la progression affiche chaque recherche et chaque page lue (Claude Code) ;
   - le message « Gemini travaille encore » dit ce qui est déjà fait ;
@@ -50,7 +51,7 @@ Configuration requise : macOS 14 ou plus, Xcode (pour compiler), un compte Googl
    .build/release/mcp-gemini --install
    ```
    `--install` copie l'exécutable (signé) dans `~/Library/Application Support/MCP Gemini/`. Il inscrit ce chemin dans Claude Desktop et dans Claude Code, qui lancent ainsi la même version. Il installe aussi la commande `/gemini` dans `~/.claude/commands/`, sans jamais écraser une copie modifiée à la main. Une copie de sécurité de chaque configuration de Claude est rangée dans `~/Library/Application Support/MCP Gemini/backups/` (3 au plus).
-3. Redémarrer Claude Desktop (Claude Code le voit à sa prochaine session).
+3. Redémarrer Claude Desktop (Claude Code le voit à sa prochaine session). Pour que Claude Code consulte Gemini sans demander l'autorisation à chaque fois, ajouter `"permissions": {"allow": ["mcp__gemini"]}` dans `~/.claude/settings.json` ; dans Claude Desktop, choisir « Toujours autoriser » au premier appel.
 4. Vérifier : `.build/release/mcp-gemini --test`.
 
 Depuis juin 2026, gemini-cli n'accepte plus les comptes Google personnels : avec ce type de compte, utiliser `agy`. `mcp-gemini --backend gemini` bascule vers gemini-cli (clé API ou licence Entreprise).

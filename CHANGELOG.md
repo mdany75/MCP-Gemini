@@ -1,5 +1,9 @@
 # Journal des versions
 
+## 0.8 — 2026-10-24
+
+- Claude consulte Gemini de lui-même, sans attendre qu'on le lui demande, quand Gemini apporte ce qu'il n'a pas : générer une image, analyser une vidéo YouTube, une information locale ou récente, un deuxième avis sur un fait important, un document trop long. Pour le raisonnement, le code et la rédaction, il répond seul. Il dit chaque fois qu'il a consulté Gemini et pourquoi. La règle est la même dans les instructions du serveur et la description d'`ask_gemini`.
+
 ## 0.7 — 2026-10-24
 
 Six améliorations tirées de la comparaison entre les suggestions de Claude et celles de Gemini.

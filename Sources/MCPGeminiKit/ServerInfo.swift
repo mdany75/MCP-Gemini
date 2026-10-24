@@ -2,13 +2,23 @@ import Foundation
 
 public enum ServerInfo {
     public static let name = "mcp-gemini"
-    public static let version = "0.7"
+    public static let version = "0.8"
+
+    /// Quand consulter Gemini de soi-même : la même règle dans les instructions et la description d'`ask_gemini`.
+    public static let whenToConsult = """
+    Consulte Gemini de toi-même, sans attendre qu'on te le demande, quand il apporte ce que tu n'as pas : générer une \
+    image ; résumer ou analyser une vidéo YouTube (`youtube_url`) ; une information locale ou récente (actualité, prix, \
+    horaires, météo, commerces, lieux), par la recherche Google avec sources ; un deuxième avis sur un fait important \
+    (santé, argent, droit, sécurité), à recouper avec ta propre réponse ; un document trop long pour toi (`files`). \
+    Pour le raisonnement, le code, la rédaction ou les questions sur le projet en cours, réponds seul. Quand tu l'as \
+    consulté, dis-le à l'utilisateur en une ligne avec la raison, cite ses sources et signale tout désaccord.
+    """
 
     public static func instructions(settings: Settings) -> String {
         """
-        Pont vers Gemini (Google, par agy en lecture seule), pour ce que Gemini fait bien : recherche Google en temps \
-        réel avec sources (actualité, prix, horaires, lieux), analyse de fichiers joints (paramètre `files` : images, PDF, \
-        longs textes), génération d'images (renvoyées en image), très gros volumes de texte. Vidéo YouTube : `ask_gemini` \
+        Pont vers Gemini (Google, par agy en lecture seule). \(whenToConsult) Capacités : recherche Google en temps \
+        réel avec sources, analyse de fichiers joints (paramètre `files` : images, PDF, texte, code), génération d'images \
+        (renvoyées en image), très gros volumes de texte. Vidéo YouTube : `ask_gemini` \
         avec `youtube_url` (Gemini reçoit la transcription complète) ; `youtube_transcript` seulement pour le texte \
         lui-même ; Gemini ne lit pas une vidéo par son adresse dans la demande. \
         Appelle `ask_gemini` avec une demande complète et autonome (Gemini ne voit pas cette conversation), et choisis \
