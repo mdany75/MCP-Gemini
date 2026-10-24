@@ -22,6 +22,8 @@ public struct Settings: Codable, Equatable, Sendable {
     /// Effort de réflexion d'agy : `low`, `medium`, `high`… ; `nil` = celui du programme.
     /// Plus bas = plus rapide (Claude Desktop coupe les appels qui dépassent environ 60 s).
     public var effort: String?
+    /// Attente maximale par appel d'outil avant de rendre un `job_id`, en secondes (sous les 60 s de Claude Desktop).
+    public var waitSeconds: Int = 40
     /// Durée maximale d'un appel, en secondes.
     public var timeoutSeconds: Int = 240
     /// Nombre maximal d'échanges automatiques dans une même session (garde-fou contre les boucles).
@@ -55,6 +57,7 @@ public struct Settings: Codable, Equatable, Sendable {
     }
 
     /// Valeurs bornées : un réglage absurde ne doit ni bloquer le serveur ni supprimer les garde-fous.
+    public var effectiveWait: Int { min(max(waitSeconds, 1), 50) }
     public var effectiveTimeout: Int { min(max(timeoutSeconds, 10), 1800) }
     public var effectiveMaxTurns: Int { min(max(maxTurnsPerSession, 1), 20) }
     public var effectiveMaxCalls: Int { min(max(maxCallsPer10Minutes, 1), 200) }

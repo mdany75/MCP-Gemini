@@ -1,7 +1,9 @@
 # Journal des versions
 
-## Non publié
+## 0.2 — 2026-10-23
 
+- Corrige « Request timed out » dans Claude Desktop : une demande qui dépasse 40 s (réglage `waitSeconds`) rend un `job_id` au lieu d'échouer ; Gemini continue en arrière-plan et la réponse se récupère avec le nouvel outil `gemini_result`.
+- Une annulation du client n'arrête plus Gemini : la réponse reste récupérable (30 minutes). Trois demandes simultanées au plus.
 - Commande `/gemini` pour Claude Code (`commands/gemini.md`).
 
 ## 0.1 — 2026-10-23

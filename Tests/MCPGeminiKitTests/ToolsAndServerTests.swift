@@ -142,6 +142,42 @@ final class ToolHandlerTests: XCTestCase {
         XCTAssertTrue(second.text.contains("en 10 minutes"))
     }
 
+    func testSlowAnswerReturnsAJobIdThenTheResult() async throws {
+        let agent = try FakeAgent(body: "sleep 3; " + FakeAgent.okJSON)
+        let handler = agent.handler(settings: agent.settings { $0.waitSeconds = 1 })
+        let first = await handler.call(name: "ask_gemini", arguments: ["prompt": "q"])
+        XCTAssertFalse(first.isError, first.text)
+        XCTAssertTrue(first.text.contains("travaille encore"))
+        let id = try XCTUnwrap(first.text.components(separatedBy: "job_id = \"").dropFirst().first?.components(separatedBy: "\"").first)
+        let still = await handler.call(name: "gemini_result", arguments: ["job_id": .string(id)])
+        XCTAssertTrue(still.text.contains("travaille encore") || still.text.hasPrefix("Bonjour"))
+        let done = await handler.call(name: "gemini_result", arguments: ["job_id": .string(id)])
+        let final = done.text.hasPrefix("Bonjour de Gemini") ? done : await handler.call(name: "gemini_result", arguments: ["job_id": .string(id)])
+        XCTAssertTrue(final.text.hasPrefix("Bonjour de Gemini"), final.text)
+        XCTAssertTrue(final.text.contains("session_id"))
+        let again = await handler.call(name: "gemini_result", arguments: ["job_id": .string(id)])
+        XCTAssertTrue(again.isError, "une réponse n'est remise qu'une fois")
+    }
+
+    func testTooManyRunningJobsAreRefused() async throws {
+        let agent = try FakeAgent(body: "sleep 4; " + FakeAgent.okJSON)
+        let handler = agent.handler(settings: agent.settings { $0.waitSeconds = 1; $0.maxCallsPer10Minutes = 50 })
+        for _ in 0..<JobBoard.maxRunning {
+            let r = await handler.call(name: "ask_gemini", arguments: ["prompt": "q"])
+            XCTAssertFalse(r.isError, r.text)
+        }
+        let refused = await handler.call(name: "ask_gemini", arguments: ["prompt": "q"])
+        XCTAssertTrue(refused.isError)
+        XCTAssertTrue(refused.text.contains("en cours"))
+        ProcessRegistry.terminateAll(grace: 3)
+    }
+
+    func testResultWithoutAnyJob() async throws {
+        let handler = try FakeAgent(body: "true").handler()
+        let r = await handler.call(name: "gemini_result", arguments: [:])
+        XCTAssertTrue(r.isError)
+    }
+
     func testResetAndStatus() async throws {
         let agent = try FakeAgent(body: "echo 'agy 9.9'")
         let handler = agent.handler()
@@ -155,7 +191,7 @@ final class ToolHandlerTests: XCTestCase {
     func testToolDefinitionsAreWellFormed() throws {
         let handler = try FakeAgent(body: "true").handler()
         let names = handler.definitions.compactMap { $0["name"]?.string }
-        XCTAssertEqual(names, ["ask_gemini", "gemini_status", "reset_gemini_session"])
+        XCTAssertEqual(names, ["ask_gemini", "gemini_result", "gemini_status", "reset_gemini_session"])
         for definition in handler.definitions {
             XCTAssertEqual(definition["inputSchema"]?["type"]?.string, "object")
             XCTAssertNotNil(definition["description"]?.string)
@@ -227,17 +263,22 @@ final class MCPServerTests: XCTestCase {
         XCTAssertEqual(call?["result"]?["isError"]?.bool, false)
     }
 
-    func testCancelledNotificationStopsTheProgram() async throws {
-        let agent = try FakeAgent(body: "sleep 30")
+    func testCancelledRequestStopsWaitingButGeminiKeepsWorking() async throws {
+        // Claude Desktop annule l'appel à ~60 s : la réponse doit rester récupérable.
+        let agent = try FakeAgent(body: "sleep 3; " + FakeAgent.okJSON)
         let s = server(agent)
         let sink = Sink()
         let start = Date()
         s.receive(line: #"{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"ask_gemini","arguments":{"prompt":"q"}}}"#, send: sink.send)
         try await Task.sleep(nanoseconds: 700_000_000)
         s.receive(line: #"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":20}}"#, send: sink.send)
-        let response = await sink.waitForResponse(id: 20, timeout: 10)
-        XCTAssertLessThan(Date().timeIntervalSince(start), 10)
-        XCTAssertEqual(response?["result"]?["isError"]?.bool, true)
+        _ = await sink.waitForResponse(id: 20, timeout: 5)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 3, "l'attente s'arrête dès l'annulation")
+        // Le travail continue : sans job_id (jamais reçu), gemini_result prend la demande la plus récente.
+        s.receive(line: #"{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"gemini_result","arguments":{}}}"#, send: sink.send)
+        let result = await sink.waitForResponse(id: 21, timeout: 15)
+        XCTAssertTrue(result?["result"]?["content"]?.array?.first?["text"]?.string?.hasPrefix("Bonjour de Gemini") ?? false,
+                      "\(String(describing: result))")
     }
 
     func testProgressNotificationsWhenTokenGiven() async throws {

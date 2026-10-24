@@ -10,6 +10,7 @@ Pont local entre Claude et Gemini : un serveur MCP natif (Swift, sans API payant
 - Aucun blocage : les appels longs tournent en arrière-plan, avec signes de vie réguliers et annulation prise en charge.
 - Lecture seule : Gemini travaille dans un dossier de travail vide, en mode « plan » (il ne peut ni modifier de fichier ni lancer de commande). Il tourne avec ton compte : ce mode, pas le dossier, est la protection.
 - Commande `/gemini <question>` dans Claude Code : pose directement une question à Gemini (fichier `commands/gemini.md`, à copier dans `~/.claude/commands/`).
+- `gemini_result` : récupère la réponse d'une recherche longue. Au-delà de 40 s, `ask_gemini` rend un `job_id` au lieu d'échouer (Claude Desktop coupe les appels à 60 s) ; Gemini continue en arrière-plan.
 - `gemini_status` : programme utilisé, version, réglages, et test de la connexion Google.
 - `reset_gemini_session` : efface la mémoire d'une session.
 - Deux programmes pris en charge : **Antigravity CLI (`agy`)**, recommandé, et gemini-cli.
@@ -34,7 +35,7 @@ Configuration requise : macOS 14 ou plus, Xcode (pour compiler), un compte Googl
 
 Depuis juin 2026, gemini-cli n'accepte plus les comptes Google personnels : avec ce type de compte, utiliser `agy`. `mcp-gemini --backend gemini` bascule vers gemini-cli (clé API ou licence Entreprise).
 
-Délai : Claude Desktop coupe un appel d'outil au bout d'environ 60 s ; Claude Code n'a pas cette limite. Une recherche web de Gemini peut dépasser ce délai : mettre `"effort": "low"` dans les réglages pour des réponses plus rapides.
+Délai : Claude Desktop coupe un appel d'outil au bout d'environ 60 s. Une recherche web de Gemini dure souvent plus longtemps : après 40 s, le serveur répond « Gemini travaille encore » avec un `job_id`, et Claude récupère la réponse avec `gemini_result`.
 
 ## Réglages
 
@@ -47,14 +48,15 @@ Fichier `~/Library/Application Support/MCP Gemini/settings.json` (tous les champ
 | `model` | celui du programme | voir `agy models` |
 | `mode` | `plan` | `plan` (lecture seule), `accept-edits`, `auto` |
 | `effort` | celui du programme | `low`, `medium`, `high` |
-| `timeoutSeconds` | 240 | durée maximale d'un appel |
+| `waitSeconds` | 40 | attente par appel avant de rendre un `job_id` (au plus 50) |
+| `timeoutSeconds` | 240 | durée maximale d'une demande |
 | `maxTurnsPerSession` | 5 | échanges par session |
 | `maxCallsPer10Minutes` | 30 | appels par fenêtre de 10 minutes |
 | `preamble` | consigne de délégation | texte ajouté au premier message |
 
 ## Reconstruire
 
-Outils : Xcode (Swift 6). `swift build -c release` produit `.build/release/mcp-gemini`. `swift test` lance les 63 tests, qui utilisent un faux programme et n'appellent jamais Gemini.
+Outils : Xcode (Swift 6). `swift build -c release` produit `.build/release/mcp-gemini`. `swift test` lance les 66 tests, qui utilisent un faux programme et n'appellent jamais Gemini.
 
 ## Organisation
 

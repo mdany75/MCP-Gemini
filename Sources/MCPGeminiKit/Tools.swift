@@ -8,7 +8,7 @@ public struct ToolResult: Equatable, Sendable {
     public static func fail(_ text: String) -> ToolResult { ToolResult(text: text, isError: true) }
 }
 
-/// Les trois outils du serveur : `ask_gemini`, `gemini_status`, `reset_gemini_session`.
+/// Les outils du serveur : `ask_gemini`, `gemini_result`, `gemini_status`, `reset_gemini_session`.
 public final class ToolHandler: Sendable {
     public static let maxPromptCharacters = 100_000
     /// Plafond de la réponse renvoyée à Claude (Claude Code écarte les résultats trop gros).
@@ -22,6 +22,7 @@ public final class ToolHandler: Sendable {
     private let workspace: URL
     private let environment: [String: String]
     private let home: String
+    private let jobs = JobBoard()
 
     public init(settings: Settings, store: SessionStore,
                 workspace: URL = Settings.workspaceURL(),
@@ -46,7 +47,9 @@ public final class ToolHandler: Sendable {
                 À utiliser pour ce que Gemini fait mieux : recherche web ou Google Maps en temps réel, analyse d'une chaîne \
                 ou d'une vidéo YouTube, très gros volumes de texte. Gemini ne voit PAS cette conversation : la demande \
                 doit être complète et autonome. Renvoie un `session_id` à repasser pour une question de suivi \
-                (limite de \(settings.effectiveMaxTurns) échanges par session). Gemini peut se tromper : recouper les faits importants.
+                (limite de \(settings.effectiveMaxTurns) échanges par session). Gemini peut se tromper : recouper les faits importants. \
+                Une recherche peut durer plus d'une minute : si la réponse n'est pas prête après \(settings.effectiveWait) s, l'outil \
+                renvoie un `job_id` (ce n'est pas une erreur) : appeler alors `gemini_result` avec ce `job_id`, autant de fois que nécessaire.
                 """),
                 "inputSchema": [
                     "type": "object",
@@ -58,6 +61,19 @@ public final class ToolHandler: Sendable {
                     "required": ["prompt"],
                 ],
                 "annotations": ["title": "Demander à Gemini", "readOnlyHint": true, "openWorldHint": true],
+            ],
+            [
+                "name": "gemini_result",
+                "title": "Récupérer la réponse de Gemini",
+                "description": .string("""
+                Récupère la réponse d'une demande lancée par `ask_gemini` qui n'était pas terminée (message « en cours » avec un `job_id`). \
+                Attend jusqu'à \(settings.effectiveWait) s ; si Gemini travaille encore, rappeler cet outil avec le même `job_id`.
+                """),
+                "inputSchema": [
+                    "type": "object",
+                    "properties": ["job_id": ["type": "string", "description": "Le `job_id` renvoyé par `ask_gemini` (facultatif : par défaut, la demande la plus récente)."]],
+                ],
+                "annotations": ["title": "Récupérer la réponse de Gemini", "readOnlyHint": true, "openWorldHint": true],
             ],
             [
                 "name": "gemini_status",
@@ -88,13 +104,41 @@ public final class ToolHandler: Sendable {
     public func call(name: String, arguments: [String: JSONValue]) async -> ToolResult {
         switch name {
         case "ask_gemini": return await askGemini(arguments)
+        case "gemini_result": return await geminiResult(arguments)
         case "gemini_status": return await status(test: arguments["test"]?.bool ?? false)
         case "reset_gemini_session": return await reset(arguments)
         default: return .fail("Outil inconnu : \(name)")
         }
     }
 
+    /// Lance la demande en arrière-plan et attend un peu moins que la limite de 60 s de Claude Desktop :
+    /// si Gemini n'a pas fini, on rend un `job_id` que Claude réclame avec `gemini_result`.
     private func askGemini(_ arguments: [String: JSONValue]) async -> ToolResult {
+        guard let id = jobs.start({ [self] in await runAsk(arguments) }) else {
+            return .fail("Déjà \(JobBoard.maxRunning) demandes à Gemini en cours : attendre leur fin (gemini_result) avant d'en lancer une autre.")
+        }
+        return render(await jobs.wait(id: id, seconds: TimeInterval(settings.effectiveWait)), id: id)
+    }
+
+    private func geminiResult(_ arguments: [String: JSONValue]) async -> ToolResult {
+        guard let id = arguments["job_id"]?.string.flatMap({ $0.isEmpty ? nil : $0 }) ?? jobs.latestID else {
+            return .fail("Aucune demande à Gemini en cours ni à récupérer.")
+        }
+        return render(await jobs.wait(id: id, seconds: TimeInterval(settings.effectiveWait)), id: id)
+    }
+
+    private func render(_ outcome: JobBoard.Outcome, id: String) -> ToolResult {
+        switch outcome {
+        case .finished(let result):
+            return result
+        case .running(let elapsed):
+            return .ok("⏳ Gemini travaille encore (\(elapsed) s écoulées). Ce n'est pas une erreur : appelle `gemini_result` avec job_id = \"\(id)\" pour récupérer la réponse (il attend jusqu'à \(settings.effectiveWait) s de plus).")
+        case .unknown:
+            return .fail("Aucune demande en cours avec le job_id « \(id) » (déjà récupérée, ou oubliée après 30 minutes). Relancer ask_gemini.")
+        }
+    }
+
+    private func runAsk(_ arguments: [String: JSONValue]) async -> ToolResult {
         guard let prompt = arguments["prompt"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !prompt.isEmpty else {
             return .fail("Le paramètre « prompt » est obligatoire (texte non vide).")
         }
