@@ -31,7 +31,7 @@ Pont local entre Claude et Gemini : un serveur MCP natif (Swift, sans API payant
   - `/gemini suite …` pose une question de suivi, `/gemini nouveau …` ouvre une nouvelle conversation ;
   - `/gemini ok` approuve un plan, `/gemini stop` arrête une demande ;
   - `/gemini image …` génère une image, `/gemini état` montre l'état et les modèles disponibles.
-- `gemini_status` : programme utilisé, version, modèle réellement passé, demandes en cours, sessions récentes. Avec `test`, il liste aussi les modèles disponibles et vérifie la connexion Google.
+- `gemini_status` : programme utilisé, version, modèle réellement passé, demandes en cours, sessions récentes, et le lien vers la page des limites d'utilisation du compte Google. Avec `test`, il liste aussi les modèles disponibles et vérifie la connexion Google.
 - `reset_gemini_session` : efface la mémoire d'une session (et arrête sa demande en cours).
 - Deux programmes pris en charge : **Antigravity CLI (`agy`)**, recommandé, et gemini-cli.
 
@@ -83,6 +83,7 @@ Un réglage ignoré (mode, modèle mal formé, effort inconnu) est signalé par 
 - Une réponse renvoyée à Claude est coupée à 45 000 caractères.
 - Avec gemini-cli, l'historique de la session est rejoué à chaque échange : la première demande et les échanges les plus récents sont gardés, dans une limite d'environ 60 000 caractères.
 - Les sessions inutilisées depuis 7 jours sont effacées.
+- Le compte Google a ses propres limites d'utilisation : une limite qui se recharge en quelques heures et une limite par semaine. Le pont ne peut pas lire où on en est : la page [gemini.google.com/usage](https://gemini.google.com/usage) le montre, dans un navigateur connecté à Google (ou `/usage` dans `agy` lancé à la main). Quand la limite est atteinte, `ask_gemini` le dit en clair, avec ce lien.
 - Une réponse non récupérée est oubliée au bout de 30 minutes, et une réponse remise au bout de 10 minutes.
 
 ## Reconstruire

@@ -97,6 +97,31 @@ final class BackendTests: XCTestCase {
         XCTAssertEqual(Backend.parse(kind: .agy, result: result(stdout: denied), timeoutSeconds: 60).deniedActions, ["RunCommand"])
     }
 
+    func testQuotaErrorIsSaidPlainly() {
+        let failed = #"{"event":"result","result":{"conversation_id":"c","status":"ERROR","response":""}}"#
+        let stderr = #"AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED: Individual quota reached","retryable":false}"#
+        let reply = Backend.parse(kind: .agy, result: result(stdout: failed, stderr: stderr, code: 3), timeoutSeconds: 60)
+        XCTAssertTrue(reply.quotaReached)
+        XCTAssertTrue(reply.error!.hasPrefix("limite d'utilisation de Gemini atteinte"))
+        XCTAssertTrue(reply.error!.contains(Backend.usagePage))
+        XCTAssertTrue(reply.error!.hasSuffix("RESOURCE_EXHAUSTED: Individual quota reached"))
+        let api = Backend.parse(kind: .gemini, result: result(stdout: #"{"error":{"message":"429 Too Many Requests"}}"#, code: 1),
+                                timeoutSeconds: 60)
+        XCTAssertTrue(api.quotaReached)
+    }
+
+    func testOrdinaryErrorsAreNotTakenForQuota() {
+        // Les journaux d'agy parlent de quota en temps normal : ce n'est pas une limite atteinte.
+        let crash = result(stderr: "quota_manager.go:45] doRefreshQuota: starting reload (force=true)", code: 2)
+        let reply = Backend.parse(kind: .agy, result: crash, timeoutSeconds: 60)
+        XCTAssertNotNil(reply.error)
+        XCTAssertFalse(reply.quotaReached)
+        let failed = #"{"event":"result","result":{"conversation_id":"","status":"ERROR","response":""}}"#
+        let busy = Backend.parse(kind: .agy, result: result(stdout: failed, stderr: #"AGY_ERROR: {"short_error":"Modèle saturé"}"#),
+                                 timeoutSeconds: 60)
+        XCTAssertFalse(busy.quotaReached)
+    }
+
     func testStopReasonFromTheGuardWins() {
         var stopped = result(stdout: StreamSample.initLine, code: 15)
         stopped.stopReason = "outil interdit"

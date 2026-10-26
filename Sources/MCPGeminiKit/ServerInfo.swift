@@ -2,7 +2,7 @@ import Foundation
 
 public enum ServerInfo {
     public static let name = "mcp-gemini"
-    public static let version = "0.8"
+    public static let version = "0.9"
 
     /// Quand consulter Gemini de soi-même : la même règle dans les instructions et la description d'`ask_gemini`.
     public static let whenToConsult = """

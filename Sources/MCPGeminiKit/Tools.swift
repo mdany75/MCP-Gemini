@@ -710,6 +710,7 @@ public final class ToolHandler: @unchecked Sendable {
         lines.append("Attente par appel : \(settings.effectiveWait) s (Claude Code : jusqu'à la réponse) · délai maximal d'une demande : \(settings.effectiveTimeout) s")
         lines.append("Garde-fous : \(settings.effectiveMaxTurns) échanges par session, \(settings.effectiveMaxCalls) appels par 10 minutes, \(JobBoard.maxRunning) demandes simultanées")
         lines.append("yt-dlp : \(locateTool("yt-dlp") ?? "introuvable (brew install yt-dlp)")")
+        lines.append("Limites d'utilisation du compte Google (pourcentage, recharge) : \(Backend.usagePage) — à ouvrir dans un navigateur connecté ; le pont ne peut pas les lire")
         for warning in settings.warnings { lines.append("⚠️ \(warning)") }
         let current = jobs.summaries
         lines.append(current.isEmpty ? "Demandes : aucune" : "Demandes : \(jobList())")

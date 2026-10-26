@@ -17,6 +17,8 @@ public struct BridgeReply: Equatable, Sendable {
     public var deniedActions: [String] = []
     /// Le garde-fou de lecture seule a arrêté agy : sa conversation contient une action interdite.
     public var stoppedByGuard = false
+    /// Le compte Google a épuisé son quota d'utilisation (l'erreur le dit en clair).
+    public var quotaReached = false
 
     public init(response: String, conversationId: String? = nil, error: String? = nil) {
         self.response = response
@@ -148,7 +150,26 @@ public enum Backend {
         if result.truncated, reply.error == nil {
             reply.response += "\n\n[sortie tronquée : trop volumineuse]"
         }
+        if !reply.stoppedByGuard, let error = reply.error, isQuotaError(error) {
+            reply.quotaReached = true
+            reply.error = "limite d'utilisation de Gemini atteinte (quota du compte Google épuisé) : attendre la recharge, "
+                + "en quelques heures ou à la fin de la semaine ; où on en est : \(usagePage) — détail : \(error)"
+        }
         return reply
+    }
+
+    /// Page des limites d'utilisation du compte Google (pourcentage et heure de recharge). Elle demande une connexion
+    /// Google dans un navigateur : le pont ne la lit pas, et agy ne donne son quota que dans son mode interactif (`/usage`).
+    public static let usagePage = "https://gemini.google.com/usage"
+    /// Textes d'une erreur de quota (agy, gemini-cli, API Google), comparés en minuscules. Des expressions plutôt que
+    /// « quota » seul : les journaux d'agy parlent aussi de quota en temps normal (« doRefreshQuota »).
+    static let quotaMarkers = ["quota exceeded", "quota reached", "quota limit", "exceeded your", "out of quota", "quota exhausted",
+                               "resource_exhausted", "resource exhausted", "rate limit", "ratelimit", "too many requests",
+                               "usage limit", "http 429", "code 429", "status 429", "error 429", "429 too"]
+
+    static func isQuotaError(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        return quotaMarkers.contains { lowered.contains($0) }
     }
 
     /// Dernier objet final d'agy : l'événement `result` du flux, ou l'objet unique de `--output-format json`.

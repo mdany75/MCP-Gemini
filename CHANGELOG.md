@@ -1,5 +1,10 @@
 # Journal des versions
 
+## 0.9 — 2026-10-25
+
+- Limite d'utilisation du compte Google atteinte : `ask_gemini` le dit en clair (« limite d'utilisation de Gemini atteinte »), avec le lien vers la page des limites et le message d'origine d'agy, au lieu d'une erreur générique.
+- `gemini_status` donne le lien vers [gemini.google.com/usage](https://gemini.google.com/usage), qui montre le pourcentage utilisé et l'heure de recharge. Le pont ne peut pas lire ces chiffres lui-même : agy ne les donne que dans son mode interactif, et la page demande une connexion Google.
+
 ## 0.8 — 2026-10-24
 
 - Claude consulte Gemini de lui-même, sans attendre qu'on le lui demande, quand Gemini apporte ce qu'il n'a pas : générer une image, analyser une vidéo YouTube, une information locale ou récente, un deuxième avis sur un fait important, un document trop long. Pour le raisonnement, le code et la rédaction, il répond seul. Il dit chaque fois qu'il a consulté Gemini et pourquoi. La règle est la même dans les instructions du serveur et la description d'`ask_gemini`.
